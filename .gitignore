@@ -1,0 +1,11 @@
+node_modules/
+# match logs are local; bundled demo logs live in examples/
+logs/*
+!logs/.gitkeep
+data/
+.env
+.env.*
+scratch/
+*.log
+*.tmp
+.DS_Store

@@ -1,0 +1,22 @@
+{
+  "name": "classifier-arena",
+  "version": "0.1.0",
+  "description": "Battle of the Classifiers: typed-decision models (plus an optional chat-model baseline) steer fighters in a deterministic top-down arena.",
+  "license": "MIT",
+  "author": "Simon Dixon",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OWNER/classifier-arena.git"
+  },
+  "keywords": ["classifier", "typed-decisions", "llm", "benchmark", "game", "arena", "ai-gateway", "deterministic", "replay"],
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "mock": "node server.js",
+    "live": "node scripts/live.js",
+    "headless": "node scripts/headless.js",
+    "smoke": "node scripts/smoke.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": { "node": ">=20" }
+}

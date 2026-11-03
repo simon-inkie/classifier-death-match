@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Battle of the Classifiers</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #07070d; --panel: #10101a; --line: #2a2a3d; --ink: #e8e8f0; --dim: #6c6c88;
+    --hot: #ffe14d; --bad: #ff4d4d; --good: #3cff8a;
+    --font: "Lucida Console", "DejaVu Sans Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font-family: var(--font); }
+  body { display: flex; flex-direction: column; overflow: hidden; }
+  body::after { /* scanlines */
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 50;
+    background: repeating-linear-gradient(0deg, rgba(0,0,0,0.18) 0 1px, transparent 1px 3px);
+  }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 2px solid var(--line); background: #0c0c16; }
+  h1 { font-size: 18px; margin: 0 12px 0 0; letter-spacing: 2px; color: var(--hot); text-shadow: 2px 2px 0 #b02a6a; white-space: nowrap; }
+  .grp { display: flex; align-items: center; gap: 4px; font-size: 12px; }
+  button, select, input { font-family: var(--font); font-size: 12px; background: #1b1b2b; color: var(--ink); border: 2px solid var(--line); padding: 3px 8px; text-transform: uppercase; }
+  button:hover { border-color: var(--hot); }
+  button.on { background: var(--hot); color: #000; border-color: var(--hot); }
+  button.go { background: #134d2b; border-color: var(--good); }
+  input[type=number] { width: 70px; }
+  input[type=range] { width: 80px; padding: 0; accent-color: var(--hot); background: none; border: none; }
+  #sndHint { display: none; border-color: var(--hot); color: var(--hot); cursor: pointer; animation: blink 1.2s steps(2) infinite; }
+  #sndHint.show { display: inline-block; }
+  @keyframes blink { 50% { opacity: 0.4; } }
+  label.chk { display: flex; align-items: center; gap: 3px; text-transform: uppercase; }
+  .chip { padding: 2px 6px; border: 2px solid var(--line); font-size: 11px; }
+  .chip.ok { border-color: var(--good); color: var(--good); }
+  .chip.bad { border-color: var(--bad); color: var(--bad); }
+  #clock { font-size: 20px; color: var(--hot); min-width: 90px; text-align: right; margin-left: auto; }
+  #ringmsg { color: var(--bad); font-size: 12px; min-width: 110px; }
+  #pauseChip { display: none; border-color: var(--hot); background: var(--hot); color: #000; font-weight: bold; animation: blink 1.2s steps(2) infinite; }
+  #pauseChip.show { display: inline-block; }
+  body.paused #world { border-color: var(--hot); }
+  main { flex: 1; display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; padding: 8px; min-height: 0; }
+  .col { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: hidden; }
+  #arenaWrap { position: relative; width: min(48vw, calc(100vh - 70px)); height: min(48vw, calc(100vh - 70px)); align-self: start; }
+  #arenaWrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #world { image-rendering: pixelated; image-rendering: crisp-edges; border: 3px solid var(--line); }
+  .panel { --c: #fff; background: var(--panel); border: 2px solid var(--line); border-left: 6px solid var(--c); padding: 6px 8px; display: flex; flex-direction: column; gap: 3px; flex: 1; min-height: 0; overflow: hidden; }
+  .panel.dead { opacity: 0.45; }
+  .panel.winner { border-color: var(--hot); box-shadow: 0 0 18px var(--hot); }
+  .ph { display: flex; align-items: baseline; gap: 8px; }
+  .ph .name { color: var(--c); font-size: 18px; font-weight: bold; letter-spacing: 2px; }
+  .ph .model { color: var(--dim); font-size: 10px; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .ph .st { font-size: 11px; padding: 1px 5px; }
+  .st.think { color: #6cf; } .st.stun { background: var(--bad); color: #000; } .st.dead { color: var(--dim); } .st.win { background: var(--hot); color: #000; }
+  .hp { position: relative; height: 12px; background: #2a0d0d; border: 1px solid #000; }
+  .hp .fill { position: absolute; inset: 0 auto 0 0; background: linear-gradient(#5f5, #1a1); width: 100%; transition: width 0.15s; }
+  .hp .fill.low { background: linear-gradient(#f66, #a11); }
+  .hp span { position: absolute; right: 4px; top: -1px; font-size: 10px; text-shadow: 1px 1px 0 #000; }
+  .stats { font-size: 11px; color: var(--dim); display: flex; gap: 8px; flex-wrap: wrap; }
+  .stats b { color: var(--ink); font-weight: normal; }
+  .bars { display: flex; flex-direction: column; gap: 1px; }
+  .bar { display: grid; grid-template-columns: 92px 1fr 34px; align-items: center; gap: 4px; font-size: 10px; color: var(--dim); }
+  .bar .segs { display: grid; grid-template-columns: repeat(20, 1fr); gap: 1px; height: 9px; }
+  .bar .segs i { background: #1d1d2c; }
+  .bar .segs i.f { background: color-mix(in srgb, var(--c) 45%, #222); }
+  .bar.lit { color: #000; }
+  .bar.lit .lbl { background: var(--c); color: #000; padding-left: 2px; }
+  .bar.lit .segs i.f { background: var(--c); box-shadow: 0 0 4px var(--c); }
+  .bar.lit .pct { color: var(--c); }
+  .bar .pct { text-align: right; }
+  .note { font-size: 9px; color: var(--dim); text-transform: uppercase; min-height: 11px; }
+  .log { list-style: none; margin: 0; padding: 0; font-size: 10px; color: #9a9ab8; overflow: hidden; flex: 1; min-height: 12px; border-top: 1px dashed var(--line); padding-top: 2px; }
+  .log li { white-space: nowrap; overflow: hidden; }
+  .log li:first-child { color: var(--ink); }
+  .log li.e { color: var(--bad); }
+  #results { position: fixed; inset: 0; background: rgba(0,0,0,0.78); display: none; align-items: center; justify-content: center; z-index: 40; }
+  #results.show { display: flex; }
+  #results .box { background: #0e0e18; border: 3px solid var(--hot); padding: 18px 22px; max-width: 95vw; }
+  #results h2 { margin: 0 0 4px; color: var(--hot); letter-spacing: 3px; }
+  #results .sub { color: var(--dim); font-size: 12px; margin-bottom: 10px; }
+  table { border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 4px 10px; border-bottom: 1px solid var(--line); text-align: right; }
+  th { color: var(--dim); font-weight: normal; text-transform: uppercase; font-size: 11px; }
+  td:nth-child(2), th:nth-child(2) { text-align: left; }
+  #results .btns { margin-top: 12px; display: flex; gap: 8px; }
+  label.botchk { border: 2px dashed var(--line); padding: 1px 6px; text-transform: none; }
+  /* character style: sprites only show in Logos mode */
+  .spr, img.sprite.rs { display: none; }
+  body.style-logos .spr { display: inline-flex; align-self: center; }
+  body.style-logos img.sprite.rs { display: inline-block; }
+  canvas.sprite, img.sprite { image-rendering: pixelated; image-rendering: crisp-edges; }
+  .spr canvas.sprite { width: 36px; height: 36px; border-radius: 50%; background: #0b0b12; }
+  img.sprite.rs { width: 24px; height: 24px; vertical-align: middle; margin-right: 6px; border-radius: 50%; background: #0b0b12; }
+  body.style-logos .ph { align-items: center; }
+  #toast { position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%); background: #111; border: 2px solid var(--hot); padding: 6px 12px; font-size: 12px; z-index: 60; display: none; max-width: 90vw; white-space: pre-wrap; }
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: none; align-items: center; justify-content: center; z-index: 45; }
+  .modal.show { display: flex; }
+  .modal .box { background: #0e0e18; border: 3px solid var(--hot); padding: 16px 20px; max-width: 96vw; max-height: 92vh; overflow: auto; }
+  .modal h2 { margin: 0 0 6px; color: var(--hot); letter-spacing: 3px; }
+  .modal h3 { margin: 14px 0 4px; color: var(--hot); font-size: 13px; letter-spacing: 2px; }
+  .modal .btns { margin-top: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+  .modal .dim { color: var(--dim); font-size: 11px; }
+  .modal .changed { color: var(--hot); }
+  .modal .bad { color: var(--bad); }
+  .modal input[type=number] { width: 58px; text-transform: none; }
+  #wpnTable tr.off td { opacity: 0.5; }
+  #wpnTable td:first-child, #wpnTable th:first-child { text-align: center; }
+  @media (max-width: 900px) {
+    body { overflow: auto; }
+    main { grid-template-columns: 1fr; }
+    #arenaWrap { width: calc(100vw - 16px); height: calc(100vw - 16px); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>BATTLE OF THE CLASSIFIERS</h1>
+  <div class="grp" id="modes">
+    <button data-mode="mock">Mock</button>
+    <button data-mode="live">Live</button>
+    <button data-mode="replay">Replay</button>
+  </div>
+  <div class="grp" id="liveGrp">SEED <input id="seed" type="number" value="1"> <button id="wpnBtn" title="Which weapons spawn, and their numbers">Weapons</button></div>
+  <div class="grp" id="rosterGrp"></div>
+  <div class="grp" id="styleGrp" title="Character style (key L)">STYLE
+    <button data-style="classic">Classic</button>
+    <button data-style="logos">Logos [L]</button>
+  </div>
+  <div class="grp" id="replayGrp">
+    <select id="logList"></select>
+    <input id="logFile" type="file" accept=".json" style="width:170px">
+    SPEED <select id="speed"><option>1</option><option>2</option><option>4</option><option>8</option></select>
+  </div>
+  <div class="grp">
+    <button id="start" class="go">Start [space]</button>
+    <button id="restart" title="Restart this match from the beginning (same seed and fighters)">Restart</button>
+    <span id="pauseChip" class="chip">PAUSED</span>
+    <button id="warm" title="3 throwaway calls per model to warm TLS and cold starts">Warm up</button>
+  </div>
+  <div class="grp" id="soundGrp" title="Sound on/off (key M), volume, music on/off (key N)">
+    <button id="sndBtn">Sound [M]</button>
+    <input id="vol" type="range" min="0" max="100" step="1" aria-label="Volume">
+    <button id="musBtn">Music [N]</button>
+    <span id="sndHint" class="chip">click to enable sound</span>
+  </div>
+  <div class="grp"><button id="lbBtn" title="All-time leaderboard">Leaderboard</button></div>
+  <div class="grp"><span id="keyChip" class="chip">KEY ?</span><span id="budgetChip" class="chip">CALLS 0/0</span></div>
+  <span id="ringmsg"></span>
+  <span id="clock">90.0</span>
+</header>
+<main>
+  <div class="col" id="left"></div>
+  <div id="arenaWrap">
+    <canvas id="world" width="400" height="400"></canvas>
+    <canvas id="overlay" width="800" height="800"></canvas>
+  </div>
+  <div class="col" id="right"></div>
+</main>
+<div id="results"><div class="box">
+  <h2 id="resTitle">RESULTS</h2>
+  <div class="sub" id="resSub"></div>
+  <table id="resTable"></table>
+  <div class="btns">
+    <button id="resAgain" class="go">Next match (seed +1)</button>
+    <button id="resReplay">Replay this match</button>
+    <button id="resDownload">Download log</button>
+    <button id="resClose">Close</button>
+    <button id="resResetWins">Reset session wins</button>
+  </div>
+</div></div>
+<div id="wpnModal" class="modal"><div class="box">
+  <h2>WEAPONS</h2>
+  <div class="dim">Untick to stop a weapon spawning. Defaults in brackets. The rules text every model gets follows these. Applies from the next match.</div>
+  <table id="wpnTable"></table>
+  <div class="dim" id="wpnSummary"></div>
+  <div class="btns">
+    <button id="wpnReset">Reset to defaults</button>
+    <button id="wpnClose" class="go">Done</button>
+  </div>
+</div></div>
+<div id="lbModal" class="modal"><div class="box">
+  <h2>LEADERBOARD</h2>
+  <div class="btns" style="margin-top:0">
+    <label class="chk" title="Show mock matches, and record new mock matches while ticked"><input type="checkbox" id="lbMock"> Include mock</label>
+    <select id="lbScope"><option value="all">All configs</option><option value="current">Current config</option></select>
+  </div>
+  <div id="lbBody"></div>
+  <div class="btns">
+    <button id="lbReset">Reset leaderboard</button>
+    <button id="lbClose" class="go">Close</button>
+  </div>
+</div></div>
+<div id="toast"></div>
+<script type="module" src="game.js"></script>
+</body>
+</html>
