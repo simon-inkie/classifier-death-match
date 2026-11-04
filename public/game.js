@@ -1,19 +1,20 @@
 // Browser front end: decision loops, rendering, panels, record and replay.
-import { ACTIONS, ROSTER, rosterById, median, DEFAULT_ROSTER, MAX_FIGHTERS, promptVariant } from './shared.js';
-import { createMatch, applyAction, step, sceneFor, hashState, ReplayCursor, effectiveAction,
+import { actionsFor, ACTIONS, ROSTER, rosterById, median, DEFAULT_ROSTER, MAX_FIGHTERS, promptVariant } from './shared.js';
+import { createMatch, applyAction, step, sceneFor, hashState, ReplayCursor, effectiveAction, normaliseLog,
   TICK_HZ, MATCH_TICKS, RING_START, CENTRE, ARENA_R, PILLAR_R, FIGHTER_R, MAX_HP, makeRng } from './sim.js';
 import { spaceAction } from './controls.js';
 import { botDecide, mockDecide, mockLatency, rosterEntry } from './brain.js';
 import { spriteCanvases, spriteElement, spriteDataUrl } from './sprites.js';
 import * as audio from './audio.js';
 import { WEAPON_NAMES, WEAPON_PARAMS, WEAPONS as WEAPON_DEFAULTS, DEFAULT_WEAPON_CONFIG, paramBounds, normaliseWeapons,
-  configId, configSummary, enabledWeapons } from './weapons.js';
-import { buildRecord, aggregate, filterRecords } from './leaderboard.js';
+  configId, configSummary, enabledWeapons, PICKUP_PARAMS, DEFAULT_PICKUPS } from './weapons.js';
+import { buildRecord, aggregate, filterRecords, sortStandings, mostKillsIds, celebrationText } from './leaderboard.js';
+import { estCost } from './cost.js';
+import { DecisionHistory, Seeker, statsAt, DOM_ROW_CAP } from './history.js';
 
 const TICK_MS = 1000 / TICK_HZ;
 const MIN_GAP_MS = 100;   // 10 Hz cap per fighter
 const TIMEOUT_MS = 2000;  // slower than this = stunned until the next good answer
-const EST_TOKENS = { decision: 1000, compact: 320, chat: 1200, chatOut: 20 }; // mock cost estimate, from live smoke calls
 
 const $ = (id) => document.getElementById(id);
 const world = $('world').getContext('2d');
@@ -34,6 +35,14 @@ const gameNow = () => (pausedAt ?? performance.now()) - pausedTotal;
 const WLABEL = { pistol: 'PISTOL', shotgun: 'SHOTGUN', rifle: 'RIFLE', uzi: 'UZI', missile: 'MISSILE', flamethrower: 'FLAMER', medpack: 'MEDPACK' };
 let replay = null, replayLog = null, lastLog = null, effects = [];
 let serverStatus = null;
+// History scrub. hist holds every decision of the match per fighter. While a row is selected, view is
+// {tick, id, idx} and viewMatch is a separate, re-simulated state for that tick: the live match is never touched.
+const hist = new DecisionHistory();
+let seeker = null, view = null, viewMatch = null, viewStats = null;
+const shownMatch = () => viewMatch || match;
+// End-of-match winner celebration (presentation only): null, or what is showing and the results it leads to.
+let celebrate = null;
+const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 
 // ---------- small utils
 const safeStore = {
@@ -60,7 +69,13 @@ const hitFlash = {}; // fighter id -> tick of last hit, for the white flash
 
 // ---------- weapon config: which weapons spawn and their numbers. Remembered per browser, clamped on load.
 // It is fixed for a match at Start (and saved in its log), so edits apply from the next match.
-let weaponCfg = normaliseWeapons(safeStore.get('arenaWeapons', null));
+// A saved config from before the pickup knobs existed gets today's pickup defaults (a log without them
+// still means the original 1 and 1; that is handled in normaliseWeapons).
+const storedWeapons = safeStore.get('arenaWeapons', null);
+let weaponCfg = normaliseWeapons(storedWeapons && typeof storedWeapons === 'object' && storedWeapons.pickups
+  ? storedWeapons : { ...(storedWeapons || DEFAULT_WEAPON_CONFIG), pickups: DEFAULT_PICKUPS });
+if (safeStore.get('arenaModelAims', false) === true) weaponCfg.modelAims = true;
+else delete weaponCfg.modelAims;
 function setWeaponCfg(c) {
   weaponCfg = normaliseWeapons(c);
   safeStore.set('arenaWeapons', weaponCfg);
@@ -76,6 +91,11 @@ const anyModal = () => document.querySelector('.modal.show');
 
 // ---------- header controls
 function buildHeader() {
+  $('modelAims').checked = Boolean(weaponCfg.modelAims);
+  $('modelAims').onchange = (e) => {
+    safeStore.set('arenaModelAims', e.target.checked);
+    setWeaponCfg({ ...weaponCfg, modelAims: e.target.checked });
+  };
   for (const b of document.querySelectorAll('#modes button')) b.onclick = () => setMode(b.dataset.mode);
   const rg = $('rosterGrp'); rg.innerHTML = '';
   for (const r of ROSTER) {
@@ -109,7 +129,7 @@ function buildHeader() {
   $('resResetWins').onclick = () => { safeStore.set('arenaWins', {}); toast('Session wins reset'); };
   $('wpnBtn').onclick = openWeapons;
   $('wpnClose').onclick = () => $('wpnModal').classList.remove('show');
-  $('wpnReset').onclick = () => { setWeaponCfg(DEFAULT_WEAPON_CONFIG); renderWeapons(); };
+  $('wpnReset').onclick = () => { setWeaponCfg({ ...DEFAULT_WEAPON_CONFIG, modelAims: weaponCfg.modelAims }); renderWeapons(); };
   $('lbBtn').onclick = openLeaderboard;
   $('lbClose').onclick = () => $('lbModal').classList.remove('show');
   $('lbMock').checked = lbIncludeMock;
@@ -123,14 +143,23 @@ function buildHeader() {
       return;
     }
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    // any key during the winner celebration skips to the results, and does nothing else
+    if (celebrate) {
+      if (e.code === 'Space' || e.key === 'Enter') { e.preventDefault(); e.target.blur?.(); }
+      if (!e.repeat) skipCelebration();
+      return;
+    }
     // Space only ever starts, pauses or resumes. It never restarts (that is the Restart button).
     if (e.code === 'Space') { e.preventDefault(); e.target.blur?.(); onSpace(); }
     // r replays the last match, only from the results screen so it can never kill a running match
     if ((e.key === 'r' || e.key === 'R') && lastLog && $('results').classList.contains('show')) $('resReplay').click();
+    if (view && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { e.preventDefault(); stepView(e.key === 'ArrowLeft' ? -1 : 1); }
     if (e.key === 'l' || e.key === 'L') setStyle(charStyle === 'logos' ? 'classic' : 'logos');
     if (e.key === 'm' || e.key === 'M') audio.setEnabled(!audio.getPrefs().enabled);
     if (e.key === 'n' || e.key === 'N') audio.setMusic(!audio.getPrefs().music);
   });
+  // a click anywhere skips the celebration (buttons run their own handler first: Start skips, Restart restarts)
+  document.addEventListener('click', () => { if (celebrate) skipCelebration(); });
   setMode(mode);
 }
 
@@ -201,9 +230,11 @@ function logHasBot(l) { return l.roster.some((r) => r.id === 'bot'); }
 function setReplayLog(l) {
   const unknown = (l.roster || []).filter((r) => !rosterById[r.id]).map((r) => r.id);
   if (!Array.isArray(l.roster) || unknown.length) { toast(`Bad log: unknown fighters ${unknown.join(', ')}`); return; }
+  l = normaliseLog(l);
   replayLog = l;
+  celebrate = null;
   roster = l.roster.map((r) => r.id);
-  match = createMatch({ seed: l.seed, roster, weapons: l.weapons });
+  match = new ReplayCursor(l).state;
   buildPanels();
   toast(`Loaded replay: seed ${l.seed}, ${roster.length} fighters (${logHasBot(l) ? 'with' : 'without'} bot), ${l.decisions.length} decisions, mode ${l.mode}.\nWeapons: ${l.weapons ? configSummary(normaliseWeapons(l.weapons)) : 'all (older log)'}. Press Start.`);
 }
@@ -213,6 +244,7 @@ function buildPanels() {
   const L = $('left'), R = $('right');
   L.innerHTML = ''; R.innerHTML = '';
   stats = {};
+  hist.reset(roster); seeker = null; view = null; viewMatch = null; viewStats = null; updateViewUi();
   roster.forEach((id, idx) => {
     const r = rosterById[id];
     const el = document.createElement('div');
@@ -222,19 +254,41 @@ function buildPanels() {
       : `Typed decision: probability per option${promptVariant(r) === 'compact' ? '. Compact prompt (512-token limit)' : ''}`;
     el.innerHTML = `
       <div class="ph"><span class="spr"></span><span class="name">${r.name}</span><span class="model">${r.model}</span><span class="st"></span></div>
+      <div class="viewtag"><span class="vt"></span><button type="button" class="vlive">Back to live</button></div>
       <div class="hp"><div class="fill"></div><span>100</span></div>
       <div class="stats">LAST <b class="last">-</b> MED <b class="med">-</b> <b class="dps">0.0</b>/S ERR <b class="err">0</b> COST <b class="cost">$0</b></div>
-      <div class="bars">${ACTIONS.map((a) => `<div class="bar" data-a="${a}"><span class="lbl">${a.replace('_', ' ').toUpperCase()}</span><span class="segs">${'<i></i>'.repeat(20)}</span><span class="pct"></span></div>`).join('')}</div>
+      <div class="bars">${actionsFor(sceneFor(match, id)).map((a) => `<div class="bar" data-a="${a}" ${a.startsWith('shoot_') ? `style="--c:${rosterById[a.slice(6)].colour}"` : ''}><span class="lbl">${a.startsWith('shoot_') ? rosterById[a.slice(6)].name : a.replace('_', ' ').toUpperCase()}</span><span class="segs">${'<i></i>'.repeat(20)}</span><span class="pct"></span></div>`).join('')}</div>
       <div class="note">${note}</div>
       <ol class="log"></ol>`;
     el.querySelector('.spr').appendChild(spriteElement(id, 36, r.colour));
     (idx % 2 === 0 ? L : R).appendChild(el);
-    stats[id] = { el, lat: [], ticks: [], errors: 0, timeouts: 0, calls: 0, cost: 0, lastMs: null, pendingSince: null, decisions: 0 };
+    const ol = el.querySelector('.log');
+    const pick = (e) => { const li = e.target.closest?.('li[data-idx]'); return li ? Number(li.dataset.idx) : null; };
+    ol.addEventListener('click', (e) => {
+      const i = pick(e); if (i == null) return;
+      e.target.closest('li').blur(); // keep Space for resume after a mouse click
+      selectRow(id, i);
+    });
+    ol.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.code !== 'Space') return;
+      const i = pick(e); if (i == null) return;
+      if (e.code === 'Space' && e.target.classList.contains('sel')) return; // already selected: Space resumes
+      e.preventDefault(); e.stopPropagation(); // Space here selects the row; it must not also resume
+      selectRow(id, i);
+    });
+    el.querySelector('.vlive').onclick = backToLive;
+    stats[id] = { el, lat: [], ticks: [], errors: 0, timeouts: 0, calls: 0, cost: 0, costEst: false, lastMs: null, pendingSince: null, decisions: 0, targetsChosen: {} };
   });
 }
 
 function setBars(id, d) {
   const s = stats[id]; if (!s) return;
+  const m = shownMatch();
+  if (m.weapons.modelAims) {
+    const options = d.probs ? Object.keys(d.probs) : actionsFor(sceneFor(m, id));
+    if (d.a?.startsWith('shoot_') && !options.includes(d.a)) options.push(d.a);
+    s.el.querySelector('.bars').innerHTML = options.map((a) => `<div class="bar" data-a="${a}" ${a.startsWith('shoot_') ? `style="--c:${rosterById[a.slice(6)].colour}"` : ''}><span class="lbl">${a.startsWith('shoot_') ? rosterById[a.slice(6)].name : a.replace('_', ' ').toUpperCase()}</span><span class="segs">${'<i></i>'.repeat(20)}</span><span class="pct"></span></div>`).join('');
+  }
   for (const bar of s.el.querySelectorAll('.bar[data-a]')) {
     const a = bar.dataset.a;
     let p = null;
@@ -252,46 +306,142 @@ function recordDecision(d) {
   const s = stats[d.f]; if (!s) return;
   s.calls++;
   s.decisions++;
+  if (match.weapons.modelAims && !d.err && d.a?.startsWith('shoot_')) {
+    const target = d.a.slice(6);
+    s.targetsChosen[target] = (s.targetsChosen[target] || 0) + 1;
+  }
   s.ticks.push(d.t);
   if (d.err) { s.errors++; if (/timeout/i.test(d.err)) s.timeouts++; }
   else if (d.ms != null) s.lat.push(d.ms);
   if (d.cost) s.cost += d.cost;
+  if (d.costEst) s.costEst = true;
   s.lastMs = d.ms;
   if (d.err) audio.sfx.buzz(d.f); else audio.sfx.blip(d.f);
-  setBars(d.f, d);
+  const idx = hist.add(d);
+  if (!view) setBars(d.f, d);
   const li = document.createElement('li');
+  li.dataset.idx = idx; li.tabIndex = 0; li.setAttribute('role', 'button');
   const time = (d.t / TICK_HZ).toFixed(1).padStart(4, ' ');
   if (d.err) { li.className = 'e'; li.textContent = `${time}s STUNNED ${String(d.err).slice(0, 60)}`; }
   else {
     const p = d.probs ? d.probs[d.a] : d.conf;
-    li.textContent = `${time}s ${d.a.toUpperCase().padEnd(12, ' ')} ${p == null ? '' : p.toFixed(2)} ${fmtMs(d.ms)}`;
+    li.textContent = `${time}s ${(match.weapons.modelAims && d.a.startsWith('shoot_') ? `shoot -> ${rosterById[d.a.slice(6)]?.name || d.a.slice(6)}` : d.a.replace('_', ' ').toUpperCase()).padEnd(12, ' ')} ${p == null ? '' : p.toFixed(2)} ${fmtMs(d.ms)}`;
   }
+  li.title = 'Click to rewind to this decision';
   const ol = s.el.querySelector('.log');
+  // newest on top. At the top the list stays at the top; scrolled down, hold the reader's place.
+  const away = ol.scrollTop > 2;
   ol.prepend(li);
-  while (ol.children.length > 40) ol.lastChild.remove();
+  if (away) ol.scrollTop += li.offsetHeight;
+  while (ol.children.length > DOM_ROW_CAP) ol.lastChild.remove();
+  if (view) markRows();
+}
+
+// ---------- history scrub: click a log row to rewind the arena and the panels to that decision
+function seekLog() { return mode === 'replay' ? replayLog : log; }
+function getSeeker() {
+  const l = seekLog();
+  if (!seeker || seeker.log !== l) seeker = new Seeker(l);
+  return seeker;
+}
+const NO_DECISION = { a: null, probs: null, conf: null, err: null };
+
+function selectRow(id, idx) {
+  if (celebrate || !match) return;
+  const d = hist.get(id, idx); if (!d || !seekLog()) return;
+  if (running && !paused) pause(); // pause first, then rewind
+  view = { tick: d.t, id, idx };
+  applyView();
+}
+
+function applyView() {
+  viewMatch = getSeeker().stateAt(view.tick, match.tick);
+  viewStats = {};
+  for (const id of roster) {
+    viewStats[id] = statsAt(hist.list(id), view.tick);
+    const i = id === view.id ? view.idx : hist.indexAt(id, view.tick);
+    setBars(id, hist.get(id, i) || NO_DECISION);
+  }
+  updateViewUi();
+  markRows();
+}
+
+function backToLive() {
+  if (!view) return;
+  view = null; viewMatch = null; viewStats = null;
+  for (const id of roster) { const l = hist.list(id); setBars(id, l[l.length - 1] || NO_DECISION); }
+  updateViewUi();
+  markRows();
+  if (running && paused) resume();
+}
+
+// Highlight the selected row, and the row each other fighter was on at that tick.
+function markRows() {
+  for (const id of roster) {
+    const ol = stats[id]?.el.querySelector('.log'); if (!ol) continue;
+    for (const li of ol.querySelectorAll('li.sel, li.at')) li.classList.remove('sel', 'at');
+    if (!view) continue;
+    const i = id === view.id ? view.idx : hist.indexAt(id, view.tick);
+    const li = i < 0 ? null : ol.querySelector(`li[data-idx="${i}"]`);
+    if (!li) continue;
+    li.classList.add(id === view.id ? 'sel' : 'at');
+    if (li.offsetTop < ol.scrollTop) ol.scrollTop = li.offsetTop;
+    else if (li.offsetTop + li.offsetHeight > ol.scrollTop + ol.clientHeight) ol.scrollTop = li.offsetTop + li.offsetHeight - ol.clientHeight;
+  }
+}
+
+function updateViewUi() {
+  const secs = view ? (view.tick / TICK_HZ).toFixed(1) : '';
+  $('viewBar').classList.toggle('show', Boolean(view));
+  $('viewMsg').textContent = view ? `Viewing ${secs}s, paused. Space or Back to live to resume` : '';
+  $('viewLive').onclick = backToLive;
+  for (const id of roster) {
+    const tag = stats[id]?.el.querySelector('.viewtag'); if (!tag) continue;
+    tag.classList.toggle('show', Boolean(view));
+    if (!view) continue;
+    const d = hist.get(id, id === view.id ? view.idx : hist.indexAt(id, view.tick));
+    tag.querySelector('.vt').textContent = `viewing ${secs}s` + (d ? `  ${fmtMs(d.ms)}  ${d.cost ? `${d.costEst ? '~' : ''}$${d.cost.toFixed(5)}` : '$0'}${d.err ? `  ERR ${String(d.err).slice(0, 30)}` : ''}` : '  no decision yet');
+  }
+}
+
+function stepView(dir) {
+  if (!view) return;
+  const idx = hist.step(view.id, view.idx, dir);
+  if (idx < 0 || idx === view.idx) return;
+  selectRow(view.id, idx);
 }
 
 function refreshPanels() {
+  const match = shownMatch();
   if (!match) return;
   for (const f of match.fighters) {
     const s = stats[f.id]; if (!s) continue;
+    const vs = viewStats?.[f.id]; // while viewing: the readout as it was at that tick
     const fill = s.el.querySelector('.hp .fill');
     fill.style.width = `${Math.max(0, f.hp)}%`;
     fill.classList.toggle('low', f.hp < 35);
     s.el.querySelector('.hp span').textContent = `${Math.max(0, f.hp)} HP  ${WLABEL[f.weapon] || f.weapon.toUpperCase()}${f.weapon !== 'pistol' ? ' x' + f.ammo : ''}  K${f.kills}`;
+    if (vs) {
+      s.el.querySelector('.last').textContent = fmtMs(vs.lastMs);
+      s.el.querySelector('.med').textContent = fmtMs(vs.medianMs);
+      s.el.querySelector('.dps').textContent = vs.dps.toFixed(1);
+      s.el.querySelector('.err').textContent = vs.errors;
+      s.el.querySelector('.cost').textContent = `${vs.costEst ? '~' : ''}$${vs.cost.toFixed(5)}`;
+    } else {
     s.el.querySelector('.last').textContent = fmtMs(s.lastMs);
     s.el.querySelector('.med').textContent = fmtMs(median(s.lat));
     const recent = s.ticks.filter((t) => t > match.tick - 3 * TICK_HZ).length;
     s.el.querySelector('.dps').textContent = (recent / Math.min(3, Math.max(match.tick, 1) / TICK_HZ)).toFixed(1);
     s.el.querySelector('.err').textContent = s.errors;
-    s.el.querySelector('.cost').textContent = `$${s.cost.toFixed(5)}`;
+    s.el.querySelector('.cost').textContent = `${s.costEst ? '~' : ''}$${s.cost.toFixed(5)}`;
+    }
     const st = s.el.querySelector('.st');
     s.el.classList.toggle('dead', !f.alive);
     s.el.classList.toggle('winner', match.over && match.winner === f.id);
     if (match.over && match.winner === f.id) { st.className = 'st win'; st.textContent = 'WINNER'; }
     else if (!f.alive) { st.className = 'st dead'; st.textContent = 'DEAD'; }
     else if (f.stunned) { st.className = 'st stun'; st.textContent = 'STUNNED'; }
-    else if (isPending(f.id)) { st.className = 'st think'; st.textContent = 'THINKING'; }
+    else if (!view && isPending(f.id)) { st.className = 'st think'; st.textContent = 'THINKING'; }
     else { st.className = 'st'; st.textContent = ''; }
   }
 }
@@ -302,14 +452,17 @@ function selectedRoster() { return ROSTER.map((r) => r.id).filter((id) => enable
 function preview() {
   roster = selectedRoster();
   if (roster.length < 2) { toast('Pick at least two fighters'); return; }
+  celebrate = null;
   match = createMatch({ seed: Number($('seed').value) | 0, roster, weapons: weaponCfg });
   buildPanels();
   refreshPanels();
 }
 
 function onSpace() {
-  const act = spaceAction({ running, paused, results: $('results').classList.contains('show') });
-  if (act === 'start') start();
+  if (view) { backToLive(); return; } // viewing history: Space returns to the live match (and resumes it)
+  const act = spaceAction({ running, paused, results: $('results').classList.contains('show'), celebrating: Boolean(celebrate) });
+  if (act === 'skip') skipCelebration();
+  else if (act === 'start') start();
   else if (act === 'pause') pause();
   else if (act === 'resume') resume();
 }
@@ -353,7 +506,9 @@ function updateControls() {
 }
 
 function start() {
+  view = null; viewMatch = null; viewStats = null;
   hideResults();
+  celebrate = null;
   if (running) stop();
   clearPause();
   effects = [];
@@ -372,7 +527,7 @@ function start() {
     if (roster.length < 2) return;
     matchId++;
     queue = [];
-    log = { version: 1, mode, seed: match.seed, createdAt: new Date().toISOString(), bot: roster.includes('bot'),
+    log = { version: 1, modelAims: Boolean(match.weapons.modelAims), mode, seed: match.seed, createdAt: new Date().toISOString(), bot: roster.includes('bot'),
       roster: roster.map((id) => ({ ...rosterEntry(id), kind: rosterById[id].kind })),
       weapons: match.weapons, weaponsId: match.cfgId, weaponsSummary: configSummary(match.weapons),
       decisions: [] };
@@ -386,6 +541,7 @@ function start() {
 }
 
 function stop() {
+  view = null; viewMatch = null; viewStats = null; updateViewUi();
   running = false;
   clearPause();
   matchId++; // late answers from this match are ignored
@@ -413,7 +569,7 @@ async function ask(id, mid) {
   c.lastAsk = gameNow(); c.pending = true; c.since = c.lastAsk;
   const scene = sceneFor(match, id);
   const r = rosterById[id];
-  let ans = null, err = null, ms = 0, cost = 0;
+  let ans = null, err = null, ms = 0, cost = 0, costEst = false;
   if (r.kind === 'bot') {
     const t0 = performance.now();
     ans = botDecide(scene);
@@ -428,7 +584,7 @@ async function ask(id, mid) {
     else if (rnd() < r.mock.err) err = 'mock error';
     else {
       ans = mockDecide(id, scene, rnd);
-      cost = r.kind === 'chat' ? EST_TOKENS.chat * r.price.in + EST_TOKENS.chatOut * r.price.out : EST_TOKENS[promptVariant(r) === 'compact' ? 'compact' : 'decision'] * r.price.in;
+      cost = estCost(r); costEst = true;
     }
   } else {
     const ac = new AbortController();
@@ -441,14 +597,19 @@ async function ask(id, mid) {
       ms = performance.now() - t0;
       if (j.budget) updateBudget(j.budget);
       if (!resp.ok) err = j.error || `HTTP ${resp.status}`;
-      else { ans = j; cost = j.cost || 0; }
+      else {
+        ans = j;
+        // real when the proxy had the billed cost or token usage; an older proxy sends no costSource
+        const real = j.costSource ? j.costSource !== 'none' : Number(j.cost) > 0;
+        if (real) cost = Number(j.cost) || 0; else { cost = estCost(r); costEst = true; }
+      }
     } catch (e) {
       ms = performance.now() - t0;
       err = e.name === 'AbortError' ? `timeout ${TIMEOUT_MS}ms` : e.message;
     } finally { clearTimeout(timer); }
   }
   if (mid !== matchId) return;
-  queue.push({ id, ans, err, ms: Math.round(ms), cost });
+  queue.push({ id, ans, err, ms: Math.round(ms), cost, costEst });
   c.pending = false;
   if (err && /budget spent|not set/.test(err)) { toast(err); return; } // no runaway retries
   scheduleNext(id, mid);
@@ -462,7 +623,7 @@ function drainQueue() {
     if (!f || !f.alive) continue;
     const d = { t: match.tick, f: q.id, a: q.err ? null : q.ans.action, probs: q.ans?.probs ?? null,
       conf: q.ans?.confidence ?? null, ms: q.ms, err: q.err || null,
-      cost: q.cost || 0 };
+      cost: q.cost || 0, ...(q.costEst ? { costEst: true } : {}) };
     applyAction(match, q.id, q.err ? 'stunned' : q.ans.action);
     log.decisions.push(d);
     recordDecision(d);
@@ -512,6 +673,7 @@ function frame(now) {
 }
 
 function updateClock() {
+  const match = shownMatch();
   if (!match) return;
   const left = Math.max(0, (MATCH_TICKS - match.tick) / TICK_HZ);
   $('clock').textContent = left.toFixed(1);
@@ -522,11 +684,11 @@ function finishMatch() {
   running = false;
   clearPause();
   updateControls();
-  audio.sfx.win();
+  const allDown = match.fighters.every((f) => !f.alive);
   if (mode === 'replay') {
     const h = hashState(match);
     const ok = replayLog.result && h === replayLog.result.hash;
-    showResults(`REPLAY ${ok ? 'VERIFIED' : 'MISMATCH'}`, `hash ${h} vs recorded ${replayLog.result?.hash ?? 'none'}; seed ${replayLog.seed}; ${roster.length} fighters, ${logHasBot(replayLog) ? 'with' : 'without'} bot; recorded in ${replayLog.mode} mode`, false);
+    celebrateThenResults(`${allDown ? 'ALL DOWN: ' : ''}REPLAY ${ok ? 'VERIFIED' : 'MISMATCH'}`, `hash ${h} vs recorded ${replayLog.result?.hash ?? 'none'}; seed ${replayLog.seed}; ${roster.length} fighters, ${logHasBot(replayLog) ? 'with' : 'without'} bot; recorded in ${replayLog.mode} mode`, false);
     lastLog = replayLog;
     return;
   }
@@ -550,7 +712,90 @@ function finishMatch() {
       .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); })
       .catch((e) => toast(`Leaderboard not saved (${e.message}); restart the server?`));
   }
-  showResults(`${rosterById[match.winner].name} WINS`, `${rec.note}; seed ${match.seed}, ${mode} mode, ${roster.length} fighters ${roster.includes('bot') ? 'with' : 'without'} bot, ${(match.tick / TICK_HZ).toFixed(1)} s; weapons: ${configSummary(match.weapons)}`, true);
+  celebrateThenResults(allDown ? 'ALL DOWN' : `${rosterById[match.winner].name} WINS`,
+    `${allDown ? `${rosterById[match.winner].name} ranked first, ` : ''}${rec.note}; seed ${match.seed}, ${mode} mode, ${roster.length} fighters ${roster.includes('bot') ? 'with' : 'without'} bot, ${(match.tick / TICK_HZ).toFixed(1)} s; weapons: ${configSummary(match.weapons)}`, true);
+}
+
+// Winner celebration, then the results table. Everyone down: straight to the stats, no fanfare.
+// The fanfare starts with the celebration (audio.js rate-limits it as before).
+function celebrateThenResults(title, sub, countWins) {
+  const ct = celebrationText(match);
+  effects = effects.filter((e) => e.type !== 'banner'); // the last "X DOWN" banner would sit over the headline
+  if (ct.allDown) { showResults(title, sub, countWins); return; }
+  audio.sfx.win();
+  const reduced = reducedMotion(), now = performance.now();
+  celebrate = { id: match.winner, ct, reduced, t0: now, last: now, dur: reduced ? 3000 : 4000, parts: [], results: [title, sub, countWins] };
+  if (!reduced) { confetti(70, 60, 800, -1.25, 700); confetti(70, 740, 800, -1.9, 700); }
+}
+function skipCelebration() {
+  if (!celebrate) return;
+  const [title, sub, countWins] = celebrate.results;
+  celebrate = null;
+  showResults(title, sub, countWins);
+}
+
+const CONFETTI = ['#ffe14d', '#ffffff', '#3cff8a', '#ff4dd2', '#66ccff', '#ff8a00'];
+// n pieces from (x, y) in overlay pixels, fanned around angle a (radians) at up to v px/s.
+function confetti(n, x, y, a, v) {
+  const c = rosterById[celebrate.id].colour;
+  for (let k = 0; k < n && celebrate.parts.length < 400; k++) {
+    const ang = a + (Math.random() - 0.5) * 0.7, sp = v * (0.45 + Math.random() * 0.55);
+    celebrate.parts.push({ x, y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, r: Math.random() * 6, vr: (Math.random() - 0.5) * 12,
+      w: 5 + Math.random() * 6, h: 3 + Math.random() * 4, c: Math.random() < 0.4 ? c : CONFETTI[(Math.random() * CONFETTI.length) | 0],
+      spark: Math.random() < 0.18 });
+  }
+}
+
+function drawCelebration(now) {
+  const C = celebrate, el = now - C.t0;
+  if (el >= C.dur) { skipCelebration(); return; }
+  const dt = Math.min(0.05, (now - C.last) / 1000); C.last = now;
+  const r = rosterById[C.id], still = C.reduced;
+  const fade = still ? 1 : Math.min(1, (C.dur - el) / 450); // fade out into the results
+  ov.save();
+  ov.globalAlpha = fade;
+  ov.fillStyle = `rgba(4,4,10,${still ? 0.7 : Math.min(0.7, el / 300 * 0.7)})`; ov.fillRect(0, 0, 800, 800);
+  if (!still && el < 380) { ov.fillStyle = `rgba(255,255,255,${0.4 * (1 - el / 380)})`; ov.fillRect(0, 0, 800, 800); } // gentle flash
+  // confetti: a trickle from the top for most of the show, plus the opening bursts
+  if (!still) {
+    if (el < C.dur - 1200) for (let k = 0; k < 2; k++) confetti(1, Math.random() * 800, -10, Math.PI / 2, 120);
+    for (const p of C.parts) {
+      p.vy += 520 * dt; p.vx *= 1 - 0.9 * dt; p.vy *= 1 - 0.6 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.r += p.vr * dt;
+      if (p.spark) { // twinkling square sparkle
+        if ((now / 90 + p.w) % 2 < 1.2) { ov.fillStyle = '#fff'; ov.fillRect(p.x - 2, p.y - 2, 4, 4); ov.fillStyle = p.c; ov.fillRect(p.x - 5, p.y - 1, 10, 2); ov.fillRect(p.x - 1, p.y - 5, 2, 10); }
+        continue;
+      }
+      ov.save(); ov.translate(p.x, p.y); ov.rotate(p.r); ov.fillStyle = p.c;
+      ov.fillRect(-p.w / 2, -p.h / 2 * Math.abs(Math.cos(p.r * 1.7)), p.w, p.h * Math.abs(Math.cos(p.r * 1.7)) + 1); ov.restore();
+    }
+    C.parts = C.parts.filter((p) => p.y < 820);
+  }
+  // pop-in for the logo and the headline
+  const k = still ? 1 : Math.min(1, el / 520);
+  const pop = still ? 1 : 1 + 2.70158 * Math.pow(k - 1, 3) + 1.70158 * Math.pow(k - 1, 2); // ease-out-back
+  const bob = still ? 0 : Math.sin(el / 260) * 6;
+  const spr = spriteCanvases(C.id);
+  const size = 18 * 8 * pop, cx = 400, cy = 250 + bob;
+  ov.fillStyle = '#0b0b12'; ov.strokeStyle = r.colour; ov.lineWidth = 6;
+  ov.shadowColor = r.colour; ov.shadowBlur = still ? 18 : 18 + 10 * Math.sin(el / 200);
+  ov.beginPath(); ov.arc(cx, cy, 92 * pop, 0, Math.PI * 2); ov.fill(); ov.stroke();
+  ov.shadowBlur = 0;
+  if (spr) { ov.imageSmoothingEnabled = false; ov.drawImage(spr.normal, cx - size / 2, cy - size / 2, size, size); }
+  // headline in the winner's colour, shrunk to fit
+  const text = `${r.name.toUpperCase()} WINS!`;
+  ov.textAlign = 'center'; ov.textBaseline = 'alphabetic';
+  let fs = 64; ov.font = `bold ${fs}px monospace`;
+  while (ov.measureText(text).width > 740 && fs > 28) { fs -= 2; ov.font = `bold ${fs}px monospace`; }
+  ov.save(); ov.translate(400, 440); ov.scale(pop, pop);
+  ov.fillStyle = '#000'; ov.fillText(text, 4, 4);
+  ov.fillStyle = r.colour; ov.fillText(text, 0, 0);
+  ov.restore();
+  ov.font = 'bold 22px monospace'; ov.fillStyle = '#e8e8f0';
+  ov.fillText(C.ct.line, 400, 490);
+  if (C.ct.tieBreak) { ov.font = '16px monospace'; ov.fillStyle = '#ffe14d'; ov.fillText(C.ct.tieBreak, 400, 522); }
+  ov.font = '13px monospace'; ov.fillStyle = '#8c8ca8';
+  ov.fillText('click or press any key for the stats', 400, 770);
+  ov.restore();
 }
 
 function showResults(title, sub, countWins) {
@@ -563,9 +808,9 @@ function showResults(title, sub, countWins) {
     return `<tr><td>${i + 1}</td><td style="color:${r.colour}"><img class="sprite rs" alt="" style="box-shadow:0 0 0 2px ${r.colour}" src="${spriteDataUrl(id, 24)}">${r.name} <span style="color:var(--dim);font-size:10px">${r.model}</span></td>
       <td>${Math.max(0, f.hp)}</td><td>${f.kills}</td><td>${wins[id] || 0}</td><td>${s.decisions}</td>
       <td>${(s.decisions / secs).toFixed(1)}</td><td>${fmtMs(median(s.lat))}</td><td>${s.errors}</td>
-      <td>${f.shots ? Math.round((f.hits / f.shots) * 100) + '%' : '-'}</td><td>$${s.cost.toFixed(5)}</td></tr>`;
+      <td>${f.shots ? Math.round((f.hits / f.shots) * 100) + '%' : '-'}</td><td>${r.kind === 'bot' ? '-' : `${s.costEst ? '~' : ''}$${s.cost.toFixed(5)}`}</td></tr>`;
   }).join('');
-  $('resTable').innerHTML = `<tr><th>#</th><th>Fighter</th><th>HP</th><th>Kills</th><th>Session wins</th><th>Decisions</th><th>Dec/s</th><th>Median latency</th><th>Errors</th><th>Hit rate</th><th>Cost (est.)</th></tr>${rows}`;
+  $('resTable').innerHTML = `<tr><th>#</th><th>Fighter</th><th title="Health points remaining at the end of the match (0 = knocked out)">HP left</th><th>Kills</th><th>Session wins</th><th>Decisions</th><th>Dec/s</th><th>Median latency</th><th>Errors</th><th>Hit rate</th><th title="~ = includes estimated cost">Cost</th></tr>${rows}`;
   $('results').classList.add('show');
 }
 function hideResults() { $('results').classList.remove('show'); }
@@ -624,6 +869,21 @@ floor.width = W; floor.height = W;
       g.fillRect(x | 0, y | 0, 2, 2);
     }
   }
+})();
+
+// Inkie splat decal at the arena centre, baked into the cached floor (under everything, so the seek view gets it too).
+// Purely visual: the sim never sees it. Drawn only once loaded; a load failure leaves the plain floor.
+(function loadFloorDecal() {
+  const img = new Image();
+  img.onload = () => {
+    const w = 80, h = w * img.naturalHeight / img.naturalWidth;
+    const g = floor.getContext('2d');
+    g.save(); g.globalAlpha = 0.38; g.imageSmoothingQuality = 'high';
+    g.drawImage(img, CENTRE - w / 2, CENTRE - h / 2, w, h);
+    g.restore();
+  };
+  img.onerror = () => {};
+  img.src = 'assets/inkie-splat-logo.png';
 })();
 
 function collectEffects() {
@@ -687,6 +947,7 @@ function drawLogoFighter(f, colour, flashing) {
 }
 
 function render() {
+  const match = shownMatch(); // the rewound state while viewing history, else the live match
   if (!match) return;
   world.imageSmoothingEnabled = false;
   world.drawImage(floor, 0, 0);
@@ -763,9 +1024,9 @@ function render() {
     world.strokeStyle = '#000'; world.lineWidth = 1.5; world.stroke();
     world.fillStyle = '#000'; world.fillRect(Math.round(x + Math.cos(f.face) * 3) - 1, Math.round(y + Math.sin(f.face) * 3) - 1, 2, 2);
   }
-  drawFlames(); // on top of the fighters, so a close-range burst is never hidden by the sprites
+  drawFlames(match); // on top of the fighters, so a close-range burst is never hidden by the sprites
   // effects (pixel layer)
-  for (const e of effects) {
+  for (const e of view ? [] : effects) { // live effects belong to the live moment, not a rewound one
     if (e.type === 'flash') { world.fillStyle = '#fff6b0'; world.fillRect(Math.round(e.x) - 2, Math.round(e.y) - 2, 4, 4); }
     if (e.type === 'p') {
       world.fillStyle = e.c; world.fillRect(Math.round(e.x), Math.round(e.y), 2, 2);
@@ -791,7 +1052,8 @@ function render() {
     const r = rosterById[f.id], x = f.x * S, y = f.y * S, s = stats[f.id];
     // pending ring: fills while waiting for the model, red near timeout
     let frac = null;
-    if (mode === 'replay') frac = replayPendingFrac(f.id);
+    if (view) frac = null;
+    else if (mode === 'replay') frac = replayPendingFrac(f.id);
     else if (ctl[f.id]?.pending && r.kind !== 'bot') frac = Math.min(1, (gameNow() - ctl[f.id].since) / TIMEOUT_MS);
     if (frac != null) {
       ov.strokeStyle = '#ffffff30'; ov.lineWidth = 3;
@@ -808,10 +1070,10 @@ function render() {
     ov.font = '11px monospace';
     ov.fillStyle = '#ccc';
     const act = effectiveAction(match, f);
-    ov.fillText(`${act.replace('_', ' ')}  ${fmtMs(s?.lastMs)}`, x, y + 36 + LY);
+    ov.fillText(`${act.replace('_', ' ')}  ${fmtMs(view ? viewStats?.[f.id]?.lastMs : s?.lastMs)}`, x, y + 36 + LY);
     if (f.stunned && (match.tick >> 2) % 2) { ov.font = 'bold 26px monospace'; ov.fillStyle = '#ff3b3b'; ov.fillText('!', x + 20 + LY, y - 12 - LY); }
   }
-  for (const e of effects) {
+  for (const e of view ? [] : effects) {
     if (e.type === 'text') { ov.font = 'bold 12px monospace'; ov.fillStyle = '#ffe14d'; ov.fillText(e.text, e.x * S, e.y * S - (30 - e.life)); }
     if (e.type === 'banner') {
       ov.font = 'bold 34px monospace'; ov.fillStyle = '#000'; ov.fillText(e.text, 403, 83);
@@ -819,11 +1081,12 @@ function render() {
     }
   }
   if (running && !paused) effects = effects.filter((e) => --e.life > 0);
-  if (match.over && !running) {
+  if (celebrate) drawCelebration(performance.now());
+  else if (match.over && !running) {
     ov.font = 'bold 30px monospace'; ov.fillStyle = '#ffe14d';
-    ov.fillText(`${rosterById[match.winner].name} WINS`, 400, 400);
+    ov.fillText(match.fighters.every((f) => !f.alive) ? 'ALL DOWN' : `${rosterById[match.winner].name} WINS`, 400, 400);
   }
-  if (paused) {
+  if (paused && !view) { // while viewing, the bar under the arena says it instead
     ov.fillStyle = 'rgba(0,0,0,0.6)'; ov.fillRect(300, 740, 200, 44); // bottom, clear of the banners at the top
     ov.strokeStyle = '#ffe14d'; ov.lineWidth = 3; ov.strokeRect(300, 740, 200, 44);
     ov.font = 'bold 30px monospace'; ov.fillStyle = (Math.floor(performance.now() / 600) % 2) ? '#ffe14d' : '#fff';
@@ -833,7 +1096,7 @@ function render() {
 
 // Flamethrower bursts, drawn from sim state so a paused frame keeps its flames.
 // The flicker is seeded by the tick, not Math.random, so it freezes with the game.
-function drawFlames() {
+function drawFlames(match) {
   const W = match.W.flamethrower, reach = W.range + FIGHTER_R;
   for (const f of match.fighters) {
     if (!f.alive || f.flame <= 0) continue;
@@ -872,8 +1135,15 @@ function renderWeapons() {
     return `<tr class="${c.on ? '' : 'off'}"><td>${tick}</td><td>${w}${w === 'flamethrower' ? ' <span class="dim">dmg per tick</span>' : ''}</td>${PARAM_COLS.map(cell).join('')}</tr>`;
   }).join('');
   $('wpnTable').innerHTML = head + rows;
+  const help = { density: 'Share of pickup spots filled at the start (0 = none, 1 = every spot, 2 = extra spots). Chosen from the seed, the same in every slot; unfilled spots stay empty.',
+    respawn: 'How fast a taken pickup comes back (1 = 15 s, 0.5 = 30 s, 0 = never).' };
+  $('wpnPickups').innerHTML = Object.entries(PICKUP_PARAMS).map(([k, b]) => {
+    const v = weaponCfg.pickups[k], def = DEFAULT_PICKUPS[k];
+    return `<div class="pk"><label>${b.label} <input type="number" data-p="${k}" min="${b.min}" max="${b.max}" step="${b.step}" value="${v}" title="${b.min} to ${b.max}, step ${b.step}, default ${def}"> <span class="dim${v !== def ? ' changed' : ''}">(${def})</span></label> <span class="dim">${help[k]}</span></div>`;
+  }).join('');
   $('wpnSummary').textContent = `Active: ${configSummary(weaponCfg)}  (config ${configId(weaponCfg)})`;
   for (const el of $('wpnTable').querySelectorAll('input')) el.onchange = readWeapons;
+  for (const el of $('wpnPickups').querySelectorAll('input')) el.onchange = readWeapons;
 }
 function readWeapons() {
   const c = JSON.parse(JSON.stringify(weaponCfg));
@@ -881,12 +1151,19 @@ function readWeapons() {
     const { w, k } = el.dataset;
     c[w][k] = k === 'on' ? el.checked : el.value;
   }
+  for (const el of $('wpnPickups').querySelectorAll('input')) c.pickups[el.dataset.p] = el.value;
   setWeaponCfg(c); // clamps out-of-range values; the redraw shows what was kept
   renderWeapons();
 }
 
 // ---------- Leaderboard dialog (all-time, stored by the server in data/leaderboard.json)
 let lbData = null;
+let lbSort = null; // { key, dir }: dir 1 = descending; null = default order (wins, then average place)
+const fmtUsd = (v, est) => (v == null ? '-' : `${est ? '<span class="dim" title="Includes estimated cost">~</span>' : ''}$${v > 0 ? v.toFixed(Math.min(10, Math.max(4, 2 - Math.floor(Math.log10(v))))) : '0'}`); // 3 significant figures below $0.01
+// Numeric columns start descending, except avg place and latency/errors/cost where lower is better.
+const LB_COLS = [['played', 'Played'], ['wins', 'Wins'], ['winRate', 'Win rate'], ['avgPlace', 'Avg place', -1], ['avgSurvivalS', 'Avg survival'],
+  ['kills', 'Kills'], ['damage', 'Damage'], ['meanMs', 'Mean latency', -1], ['errors', 'Errors', -1], ['timeouts', 'Timeouts', -1],
+  ['totalCost', 'Total cost', -1], ['avgCostGame', 'Avg cost / game', -1], ['costPerCall', 'Avg cost / request', -1]];
 async function openLeaderboard() {
   $('lbModal').classList.add('show');
   $('lbBody').innerHTML = '<p class="dim">Loading...</p>';
@@ -906,21 +1183,36 @@ function renderLeaderboard() {
   if (!lbData) return;
   const opts = { includeMock: lbIncludeMock, cfgId: lbCurrentOnly ? configId(weaponCfg) : null };
   const recs = filterRecords(lbData.matches, opts);
-  const rows = aggregate(lbData.matches, opts);
+  const all = aggregate(lbData.matches, opts);
+  const topKills = mostKillsIds(all);
+  const rows = lbSort ? sortStandings(all, lbSort.key, lbSort.dir) : all;
   if (!recs.length) {
     $('lbBody').innerHTML = `<p class="dim">No ${lbIncludeMock ? '' : 'live '}matches recorded${lbCurrentOnly ? ' with the current weapons' : ''} yet.</p>`;
     return;
   }
-  const t = rows.map((a, i) => `<tr><td>${i + 1}</td><td>${fighterCell(a.id)}</td><td>${a.played}</td><td>${a.wins}</td>
+  const t = rows.map((a, i) => `<tr><td>${i + 1}</td><td>${fighterCell(a.id)}${topKills.includes(a.id) ? ' <span class="lbBadge" title="Most total kills">most kills</span>' : ''}</td><td>${a.played}</td><td>${a.wins}</td>
     <td>${Math.round(a.winRate * 100)}%</td><td>${a.avgPlace.toFixed(2)}</td><td>${a.avgSurvivalS.toFixed(1)} s</td>
-    <td>${a.kills}</td><td>${a.damage}</td><td>${fmtMs(a.meanMs)}</td><td>${a.errors}</td><td>${a.timeouts}</td></tr>`).join('');
+    <td${topKills.includes(a.id) ? ' class="lbTop"' : ''}>${a.kills}</td><td>${a.damage}</td><td>${fmtMs(a.meanMs)}</td><td>${a.errors}</td><td>${a.timeouts}</td>
+    <td>${fmtUsd(a.totalCost, a.costEst)}</td><td>${fmtUsd(a.avgCostGame, a.costEst)}</td><td>${fmtUsd(a.costPerCall, a.costEst)}</td></tr>`).join('');
   const recent = [...recs].reverse().slice(0, 12).map((m) => `<tr><td>${new Date(m.ts).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</td>
     <td>${fighterCell(m.winner)} <span class="dim">${m.note}</span></td><td>${m.mode}</td><td>${m.fighters.length}</td><td>${m.seed}</td>
-    <td class="dim" title="${m.cfgSummary}">${m.cfgId}</td></tr>`).join('');
-  $('lbBody').innerHTML = `<p class="dim">${recs.length} match${recs.length === 1 ? '' : 'es'}${lbIncludeMock ? ', live and mock' : ', live only'}${lbCurrentOnly ? `, weapons ${configId(weaponCfg)}` : ', all weapon configs'}</p>
-    <table id="lbTable"><tr><th>#</th><th>Fighter</th><th>Played</th><th>Wins</th><th>Win rate</th><th>Avg place</th><th>Avg survival</th><th>Kills</th><th>Damage</th><th>Mean latency</th><th>Errors</th><th>Timeouts</th></tr>${t}</table>
+    <td class="dim" title="${m.cfgSummary}">${m.cfgId} (${m.modelAims ? 'aims ON' : 'aims OFF'})</td></tr>`).join('');
+  $('lbBody').innerHTML = `<p class="dim">${recs.length} match${recs.length === 1 ? '' : 'es'}${lbIncludeMock ? ', live and mock' : ', live only'}${lbCurrentOnly ? `, weapons ${configId(weaponCfg)}` : ', all weapon configs'}. Cost: ~ includes estimates; per request = total cost / requests sent; matches recorded before cost tracking show -.</p>
+    <table id="lbTable"><tr><th>#</th><th>Fighter</th>${LB_COLS.map(([k, n]) => `<th class="lbSort" data-k="${k}" title="Sort by ${n}">${n}${lbSort?.key === k ? (lbSort.dir === 1 ? ' &#9660;' : ' &#9650;') : ''}</th>`).join('')}</tr>${t}</table>
     <h3>Recent matches</h3>
     <table id="lbRecent"><tr><th>When</th><th>Winner</th><th>Mode</th><th>Fighters</th><th>Seed</th><th>Weapons</th></tr>${recent}</table>`;
+  const aims = recs.filter((m) => m.modelAims);
+  if (aims.length) {
+    const ids = ROSTER.filter((r) => aims.some((m) => m.fighters.some((f) => f.id === r.id))).map((r) => r.id);
+    $('lbBody').insertAdjacentHTML('beforeend', `<h3>Who targets whom (choices)</h3><table id="lbTargets"><tr><th>Shooter / target</th>${ids.map((id) => `<th>${fighterCell(id)}</th>`).join('')}</tr>${ids.map((id) => `<tr><th>${fighterCell(id)}</th>${ids.map((target) => `<td>${id === target ? '-' : aims.reduce((n, m) => n + (m.fighters.find((f) => f.id === id)?.targetsChosen?.[target] || 0), 0)}</td>`).join('')}</tr>`).join('')}</table>`);
+  }
+  document.querySelectorAll('#lbTable th.lbSort').forEach((th) => {
+    th.onclick = () => {
+      const k = th.dataset.k, first = LB_COLS.find((c) => c[0] === k)[2] ?? 1;
+      lbSort = lbSort?.key === k ? { key: k, dir: -lbSort.dir } : { key: k, dir: first };
+      renderLeaderboard();
+    };
+  });
 }
 async function resetLeaderboard() {
   if (!confirm('Reset the all-time leaderboard? This clears every recorded match (a backup file is kept on the server).')) return;
@@ -940,4 +1232,5 @@ requestAnimationFrame(frame);
 updateControls();
 if (params.get('autostart') === '1' && mode !== 'live') setTimeout(start, 300); // for kiosk demos and headless screenshots
 window.__arena = { get weapons() { return weaponCfg; }, get match() { return match; }, get log() { return lastLog; }, get liveLog() { return log; }, get mode() { return mode; },
-  get running() { return running; }, get paused() { return paused; }, get roster() { return roster; }, get queued() { return queue.length; } };
+  get running() { return running; }, get paused() { return paused; }, get celebrating() { return Boolean(celebrate); }, get roster() { return roster; }, get queued() { return queue.length; },
+  get view() { return view; }, get viewMatch() { return viewMatch; }, get history() { return hist; } };

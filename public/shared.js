@@ -2,25 +2,29 @@
 // One source: every fighter gets the identical full text, except Laya, who gets a compact
 // variant of the same facts because of her 512-token per-question limit (see compactStateText).
 import { WEAPONS, weaponRange, distBucket, TICK_HZ, MEDPACK_HP, RING_START, RING_MIN, RING_DPS, MATCH_TICKS,
-  PICKUP_RESPAWN, ARENA_R } from './sim.js';
+  ARENA_R, respawnTicks } from './sim.js';
 import { weaponTable, enabledWeapons, normaliseWeapons, LEGACY_WEAPON_CONFIG } from './weapons.js';
 
 export const ACTIONS = [
   'advance',
   'retreat',
-  'strafe_left',
-  'strafe_right',
+  'spin_left',
+  'spin_right',
   'shoot',
   'take_cover',
   'grab_pickup',
   'hold',
 ];
 
+export function actionsFor(scene) {
+  return scene?.model_aims ? ACTIONS.flatMap((a) => a === 'shoot' ? (scene.enemies || []).map((e) => `shoot_${e.name}`) : [a]) : ACTIONS;
+}
+const AIM_RULE = 'You choose your target: shoot_<name> fires at that enemy; pick who to shoot.';
 export const ACTION_CRITERIA = {
   advance: 'move towards the nearest enemy',
   retreat: 'move directly away from the nearest enemy',
-  strafe_left: 'circle anticlockwise around the nearest enemy, dodging',
-  strafe_right: 'circle clockwise around the nearest enemy, dodging',
+  spin_left: 'circle anticlockwise around the nearest enemy, dodging',
+  spin_right: 'circle clockwise around the nearest enemy, dodging',
   shoot: 'stand still and fire the current weapon at the nearest enemy in line of sight; weapon range matters',
   take_cover: 'move behind the nearest pillar so it blocks the nearest enemy',
   grab_pickup: 'move to the nearest pickup you can use (weapon, or medpack when hurt)',
@@ -29,7 +33,7 @@ export const ACTION_CRITERIA = {
 
 export const ACTION_INSTRUCTIONS =
   'You control one fighter in a top-down arena shooter. Last fighter standing wins; ' +
-  'at 90 seconds the highest health wins. Pick the single best intention for the next moment.';
+  `at ${MATCH_TICKS / TICK_HZ} seconds the highest health wins. Pick the single best intention for the next moment.`;
 
 // Laya's compact variant. Laya (via /v1/evaluate) rejects any question whose total input (state text,
 // instructions and criteria) passes 512 tokens with HTTP 422, so she gets the same facts, tersely.
@@ -37,8 +41,8 @@ export const ACTION_INSTRUCTIONS =
 export const COMPACT_ACTION_CRITERIA = {
   advance: 'go to nearest enemy',
   retreat: 'go away from nearest enemy',
-  strafe_left: 'circle anticlockwise, dodging',
-  strafe_right: 'circle clockwise, dodging',
+  spin_left: 'circle anticlockwise, dodging',
+  spin_right: 'circle clockwise, dodging',
   shoot: 'fire at nearest visible enemy',
   take_cover: 'hide behind nearest pillar',
   grab_pickup: 'go to nearest useful pickup',
@@ -106,6 +110,7 @@ export function weaponLine(name, W = WEAPONS) {
   return `- ${name}: range ${range}, ${dmg}, ${rate}, ammo ${ammo}${note ? ', ' + note : ''}`;
 }
 
+const respawnLine = (cfg) => { const t = respawnTicks(cfg); return t === Infinity ? 'Pickups do not respawn.' : `Pickups respawn after ${r1(t / TICK_HZ)} s.`; };
 // weapons: a (normalised) weapon config. Omitted = the legacy all-on config.
 export function rulesText(weapons) {
   const cfg = weapons ? normaliseWeapons(weapons) : LEGACY_WEAPON_CONFIG;
@@ -113,7 +118,7 @@ export function rulesText(weapons) {
   return [
     'Weapons (range = furthest dist bucket a shot reaches; shots vanish at their range, so shooting an enemy beyond range is wasted):',
     ...enabledWeapons(cfg).map((n) => weaponLine(n, W)),
-    `An empty weapon reverts to the pistol. Walk over a pickup to take it. medpack: +${MEDPACK_HP} HP, only when hurt. Pickups respawn after ${PICKUP_RESPAWN / TICK_HZ} s.`,
+    `An empty weapon reverts to the pistol. Walk over a pickup to take it. medpack: +${MEDPACK_HP} HP, only when hurt. ${respawnLine(cfg)}`,
     `Ring: from ${RING_START / TICK_HZ} s it shrinks toward the centre (radius ${ARENA_R} down to ${RING_MIN} at ${MATCH_TICKS / TICK_HZ} s). Outside it you lose ${RING_DPS} HP/s. ` +
       'ring.closing = shrinking now; ring.outside = you are outside it; ring.edge = your dist to the ring edge; ring.centre = bearing to the centre.',
     'range = your current weapon range. gun_ready = can fire now. last_shot = result of your last shot (hit, miss, out_of_range or none) and ticks_ago.',
@@ -132,7 +137,7 @@ export function stateText(scene, weapons) {
     `incoming = fire about to hit you: kind (${kinds.join(', ')}), bearing, eta_ticks. ` +
     'blocked = directions with a wall or pillar right next to you.\n' +
     (weapons ? rulesText(weapons) : RULES_TEXT) + '\n' +
-    JSON.stringify(scene)
+    (scene.model_aims ? AIM_RULE + '\n' : '') + JSON.stringify(scene)
   );
 }
 
@@ -162,7 +167,7 @@ export function compactScene(sc) {
     hp: sc.hp, weapon: sc.weapon, ammo: sc.ammo === 'unlimited' ? 'inf' : sc.ammo, range: sc.range,
     ready: sc.gun_ready,
     last_shot: ls.result === 'none' ? 'none' : `${ls.result} ${ls.ticks_ago}t ago`,
-    enemies: (sc.enemies || []).map((e) => `${e.bearing} ${e.dist} ${e.los ? 'visible' : 'hidden'} ${e.hp}hp`),
+    enemies: (sc.enemies || []).map((e) => `${sc.model_aims ? e.name + ' ' : ''}${e.bearing} ${e.dist} ${e.los ? 'visible' : 'hidden'} ${e.hp}hp`),
     incoming: inc ? `${inc.kind || 'bullet'} ${inc.bearing} ${inc.eta_ticks}t` : 'none',
     blocked: (sc.blocked || []).join(' '),
     pickups: (sc.pickups || []).slice(0, 2).map((p) => `${p.type} ${p.bearing} ${p.dist}`),
@@ -171,6 +176,17 @@ export function compactScene(sc) {
   };
 }
 export function compactStateText(scene, weapons) {
+  if (scene.model_aims) {
+    const sc = compactScene(scene);
+    // Compact aliases retain identities and every decision fact within Laya's question limit.
+    const small = { hp: sc.hp, gun: sc.weapon, ammo: sc.ammo, range: sc.range, ready: sc.ready, last: sc.last_shot,
+      enemies: scene.enemies.map((e) => `${e.name} ${e.bearing} ${e.dist} ${e.los ? 'los' : 'hidden'} ${e.hp}hp`),
+      incoming: sc.incoming, blocked: sc.blocked, pickups: sc.pickups, ring: sc.ring, time: sc.time_left };
+    const cfg = weapons ? normaliseWeapons(weapons) : LEGACY_WEAPON_CONFIG;
+    const W = weaponTable(cfg);
+    const ranges = enabledWeapons(cfg).map((n) => `${n}:${distBucket(weaponRange(n, W))}${COMPACT_NOTES[n] ? ' ' + COMPACT_NOTES[n](W[n]) : ''}`).join(';');
+    return `N up, ${TICK_HZ} ticks/s; los=line of sight; close<40 near<90 mid<160 far. ${ranges}. Empty=pistol; shots end at range. Ring shrinks ${RING_START / TICK_HZ}s; outside -${RING_DPS}hp/s.\n` + AIM_RULE + '\n' + JSON.stringify(small);
+  }
   return compactRulesText(weapons) + '\n' + JSON.stringify(compactScene(scene));
 }
 
@@ -181,21 +197,29 @@ export function stateTextFor(fighter, scene, weapons) {
 }
 
 // One question for every decision model: the action Choice. Same key for the TypeSafe and /v1/evaluate shapes.
-export function decisionQuestions(variant = 'full') {
+export function decisionQuestions(variant = 'full', scene) {
+  if (scene?.model_aims) {
+    const compact = variant === 'compact';
+    const base = compact ? { advance: 'towards nearest enemy', retreat: 'away from nearest enemy', spin_left: 'anticlockwise dodge', spin_right: 'clockwise dodge', take_cover: 'pillar cover', grab_pickup: 'nearest useful pickup', hold: 'do nothing' } : ACTION_CRITERIA;
+    return { action: { type: 'choice', instructions: compact ? 'Last alive wins. Choose.' : ACTION_INSTRUCTIONS,
+      criteria: Object.fromEntries(actionsFor(scene).map((a) => [a, a.startsWith('shoot_')
+        ? (compact ? `fire at ${a.slice(6)}; los; range matters` : `fire the current weapon at ${a.slice(6)}; needs line of sight; weapon range matters`) : base[a]])) } };
+  }
   return variant === 'compact'
     ? { action: { type: 'choice', instructions: COMPACT_ACTION_INSTRUCTIONS, criteria: COMPACT_ACTION_CRITERIA } }
     : { action: { type: 'choice', instructions: ACTION_INSTRUCTIONS, criteria: ACTION_CRITERIA } };
 }
 // Estimated input tokens for one question: state text plus instructions plus every option and criterion.
-export function questionTokens(text, variant = 'full') {
-  const q = decisionQuestions(variant).action;
+export function questionTokens(text, variant = 'full', scene) {
+  const q = decisionQuestions(variant, scene).action;
   const crit = Object.entries(q.criteria).map(([k, v]) => `${k}: ${v}`).join('\n');
   return estimateTokens(`${text}\n${q.instructions}\n${crit}`);
 }
 
 // System prompt for the chat baseline (Gemini Flash, prompted for JSON).
-export function chatSystemPrompt() {
-  const opts = ACTIONS.map((a) => `- ${a}: ${ACTION_CRITERIA[a]}`).join('\n');
+export function chatSystemPrompt(scene) {
+  const criteria = decisionQuestions('full', scene).action.criteria;
+  const opts = Object.entries(criteria).map(([a, c]) => `- ${a}: ${c}`).join('\n');
   return (
     ACTION_INSTRUCTIONS +
     '\nOptions:\n' + opts +
@@ -203,6 +227,9 @@ export function chatSystemPrompt() {
   );
 }
 
+export function chatSchema(scene) {
+  return { ...CHAT_SCHEMA, properties: { ...CHAT_SCHEMA.properties, action: { type: 'string', enum: actionsFor(scene) } } };
+}
 export const CHAT_SCHEMA = {
   type: 'object',
   properties: {

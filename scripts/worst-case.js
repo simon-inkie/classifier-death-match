@@ -19,6 +19,6 @@ export function worstCaseScene() {
     blocked: ['SW', 'W', 'NW', 'N', 'NE'],
     pickups: ['flamethrower', 'flamethrower', 'flamethrower'].map((type) => ({ type, bearing: 'NW', dist: 'close' })),
     ring: { closing: true, outside: true, edge: 'close', centre: 'SE' },
-    time_left_s: 90,
+    time_left_s: 60,
   };
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createMatch, applyAction, step, sceneFor, hashState, runLog, ReplayCursor, bearing, distBucket,
+import { createMatch, applyAction, step, sceneFor, hashState, runLog, ReplayCursor, normaliseLog, bearing, distBucket,
   effectiveAction, ACTION_HOLD_TICKS, CENTRE, MAX_HP, WEAPONS, weaponRange, FIGHTER_R, PICKUP_R } from '../public/sim.js';
 import { runHeadlessMock } from '../public/brain.js';
 import { ROSTER, rosterById, stateText, DEFAULT_ROSTER, MAX_FIGHTERS, RULES_TEXT } from '../public/shared.js';
@@ -62,6 +62,37 @@ test('different seeds rotate spawns', () => {
   const ids = ROSTER.map((r) => r.id);
   const a = createMatch({ seed: 1, roster: ids }), b = createMatch({ seed: 2, roster: ids });
   assert.notDeepEqual([a.fighters[0].x, a.fighters[0].y], [b.fighters[0].x, b.fighters[0].y]);
+});
+
+test('overlapping fighters separate within a few ticks and do not oscillate, even from the same spot', () => {
+  const X = CENTRE + 70, Y = CENTRE + 70; // open ground: no pillar, pickup or wall nearby
+  for (const gap of [0, 1e-12, 3, 9]) {
+    for (const [actA, actB] of [['hold', 'hold'], ['advance', 'advance'], ['spin_left', 'spin_left'], ['spin_right', 'advance'], ['retreat', 'hold']]) {
+      const s = createMatch({ seed: 1, roster: ['jev', 'luna'] });
+      const [A, B] = s.fighters;
+      A.x = X; A.y = Y; B.x = X + gap; B.y = Y;
+      const dist = () => Math.hypot(B.x - A.x, B.y - A.y);
+      const steps = [];
+      for (let t = 0; t < 12; t++) {
+        applyAction(s, 'jev', actA); applyAction(s, 'luna', actB);
+        step(s);
+        steps.push(dist());
+      }
+      const label = `gap ${gap}, ${actA}/${actB}`;
+      assert.ok(steps[2] >= FIGHTER_R * 2 - 1e-6, `${label}: separated by tick 3 (${steps[2]})`);
+      for (const d of steps.slice(2)) assert.ok(d >= FIGHTER_R * 2 - 1e-6, `${label}: stays apart (${d})`);
+      assert.ok(A.alive && B.alive && A.hp === MAX_HP && B.hp === MAX_HP, `${label}: no damage from contact`);
+    }
+    // standing still once apart: positions settle, no back-and-forth
+    const s = createMatch({ seed: 1, roster: ['jev', 'luna'] });
+    const [A, B] = s.fighters;
+    A.x = X; A.y = Y; B.x = X + gap; B.y = Y;
+    step(s);
+    const settled = [A.x, A.y, B.x, B.y];
+    for (let t = 0; t < 10; t++) step(s);
+    assert.deepEqual([A.x, A.y, B.x, B.y], settled, `gap ${gap}: settled, no jitter`);
+    if (gap === 0) assert.ok(A.x < B.x, 'coincident: earlier roster slot goes west, deterministically');
+  }
 });
 
 test('an action lapses to hold ~300 ms after it was applied (pending call)', () => {
@@ -173,7 +204,7 @@ test('every model gets the same state text; requests use the documented shapes',
 });
 
 test('response parsing: TypeSafe snake_case, evaluate camelCase, chat JSON', () => {
-  const probs = { advance: 0.1, retreat: 0, strafe_left: 0, strafe_right: 0, shoot: 0.8, take_cover: 0.1, grab_pickup: 0, hold: 0 };
+  const probs = { advance: 0.1, retreat: 0, spin_left: 0, spin_right: 0, shoot: 0.8, take_cover: 0.1, grab_pickup: 0, hold: 0 };
   const ts = parseResponse(rosterById.jev, { answers: { action: { type: 'choice', choice: 'shoot', probabilities: probs },
     threat: { type: 'score', score: 1 } }, usage: { input_tokens: 700, output_tokens: 0 },
     provider_metadata: { gateway: { cost: '0.0000294' } } });
@@ -189,7 +220,7 @@ test('response parsing: TypeSafe snake_case, evaluate camelCase, chat JSON', () 
 });
 
 test('ScaleDown response (TypeSafe shape) parses', () => {
-  const probs = { advance: 0.05, retreat: 0, strafe_left: 0, strafe_right: 0, shoot: 0.9, take_cover: 0.05, grab_pickup: 0, hold: 0 };
+  const probs = { advance: 0.05, retreat: 0, spin_left: 0, spin_right: 0, shoot: 0.9, take_cover: 0.05, grab_pickup: 0, hold: 0 };
   const r = parseResponse(rosterById.scaledown, { model: 'scaledown/scaledown-classify-1',
     answers: { action: { type: 'choice', choice: 'shoot', confidence: 0.9, probabilities: probs } },
     usage: { input_tokens: 700, output_tokens: 1 }, provider_metadata: { gateway: { cost: '0.000035' } } });
@@ -256,8 +287,7 @@ test('new weapons are spawned as pickups, symmetric per slot and chosen by the s
   const kinds = (seed, n) => createMatch({ seed, roster: ROSTER.slice(0, n).map((r) => r.id) }).pickups.map((p) => p.type);
   for (const n of [2, 4, 6]) {
     const k = kinds(1, n);
-    for (const w of ['uzi', 'missile', 'flamethrower', 'shotgun', 'medpack']) assert.equal(k.filter((x) => x === w).length, n, `${w} x${n}`);
-    assert.equal(k.filter((x) => x === 'rifle').length, 1);
+    for (const w of ['uzi', 'missile', 'flamethrower', 'shotgun', 'medpack', 'rifle']) assert.equal(k.filter((x) => x === w).length, n, `${w} x${n}`);
   }
   assert.deepEqual(kinds(7, 4), kinds(7, 4), 'same seed, same layout');
   assert.notDeepEqual(kinds(1, 4), kinds(2, 4), 'seed changes which weapon sits where');
@@ -349,7 +379,7 @@ test('Jev, Luna, ScaleDown and Gemini get identical text; Laya gets the compact 
   assert.deepEqual(ROSTER.filter((r) => promptVariant(r) === 'compact').map((r) => r.id), ['laya']);
   const c = compactStateText(sc, WORST_WEAPONS);
   for (const w of Object.keys(WEAPONS)) assert.match(c, new RegExp(`${w} (close|near|mid|far)`));
-  assert.match(c, /hurts you too/); assert.match(c, /in cone/); assert.match(c, /vanish at range/); assert.match(c, /Ring shrinks from 60s/);
+  assert.match(c, /hurts you too/); assert.match(c, /in cone/); assert.match(c, /vanish at range/); assert.match(c, /Ring shrinks from 30s/);
   assert.match(c, /"incoming":"missile NW 44t"/);
   const off = clone(WORST_WEAPONS); off.missile.on = false; off.flamethrower.on = false;
   assert.ok(!/missile|flamethrower/.test(compactRulesText(off)), 'disabled weapons absent');
@@ -379,6 +409,7 @@ test('space starts, pauses and resumes; it never restarts', () => {
   assert.equal(spaceAction({ running: true, paused: false, results: false }), 'pause');
   assert.equal(spaceAction({ running: true, paused: true, results: false }), 'resume');
   assert.equal(spaceAction({ running: false, paused: false, results: true }), 'none');
+  assert.equal(spaceAction({ running: false, paused: false, results: false, celebrating: true }), 'skip', 'space during the celebration only skips to the stats');
 });
 
 test('answers held over a pause and applied on resume still replay exactly', () => {
@@ -394,9 +425,9 @@ test('answers held over a pause and applied on resume still replay exactly', () 
 });
 
 // ---------- weapon config
-import { DEFAULT_WEAPON_CONFIG, normaliseWeapons, configId } from '../public/weapons.js';
+import { DEFAULT_WEAPON_CONFIG, normaliseWeapons, configId, configSummary } from '../public/weapons.js';
 import { rulesText } from '../public/shared.js';
-import { buildRecord, cleanRecord, aggregate, placesFor } from '../public/leaderboard.js';
+import { sortStandings, mostKillsIds, buildRecord, cleanRecord, aggregate, placesFor, celebrationText } from '../public/leaderboard.js';
 
 const noMissile = () => { const c = clone(DEFAULT_WEAPON_CONFIG); c.missile.on = false; c.rifle.dmg = 22; return c; };
 
@@ -408,11 +439,11 @@ test('weapon config: validated and clamped; disabled weapons never spawn or appe
   assert.equal(n.rifle.cd, 2);
   assert.equal(n.rifle.ammo, WEAPONS.rifle.ammo);
   assert.equal(n.junk, undefined);
-  const cfg = noMissile();
+  const cfg = { ...noMissile(), pickups: { density: 1, respawn: 1 } }; // every spot filled, to compare places
   const s = createMatch({ seed: 3, roster: DEFAULT_ROSTER, weapons: cfg });
   const kinds = s.pickups.map((p) => p.type);
   assert.ok(!kinds.includes('missile') && !kinds.includes('flamethrower'));
-  assert.ok(kinds.includes('uzi') && kinds.includes('rifle') && kinds.includes('medpack'));
+  assert.ok(kinds.includes('uzi') && kinds.includes('medpack') && kinds.includes('rifle'));
   // cover and the other pickups keep their places
   const all = createMatch({ seed: 3, roster: DEFAULT_ROSTER });
   assert.deepEqual(s.pillars, all.pillars);
@@ -446,6 +477,67 @@ test('weapon config is part of the match: saved in the log, replays exactly, and
   // a log without a config (older logs) replays with every weapon on
   const legacy = clone(log); delete legacy.weapons;
   assert.ok(new ReplayCursor(legacy).state.pickups.some((p) => p.type === 'flamethrower'));
+});
+
+// ---------- pickup density and respawn rate
+// Which spawn slot a pickup belongs to: spots sit on a slot angle, half a slot past it, or a quarter slot either side.
+function slotCounts(s, n) {
+  const counts = new Array(n).fill(0), step = (2 * Math.PI) / n;
+  for (const p of s.pickups) {
+    const rel = (((Math.atan2(p.y - CENTRE, p.x - CENTRE) + Math.PI / 2) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    counts[Math.floor(rel / step + 0.375) % n]++; // the rifle sits a quarter slot either side of the axis
+  }
+  return counts;
+}
+const withPickups = (density, respawn = 1) => ({ ...clone(DEFAULT_WEAPON_CONFIG), pickups: { density, respawn } });
+
+test('pickups: density 0 starts empty, density scales symmetrically per slot, respawn 0 never respawns', () => {
+  assert.equal(createMatch({ seed: 5, roster: DEFAULT_ROSTER, weapons: withPickups(0) }).pickups.length, 0, 'density 0: no start pickups');
+  const full = createMatch({ seed: 5, roster: DEFAULT_ROSTER, weapons: withPickups(1) }).pickups.length;
+  for (const seed of [1, 2, 3, 4, 5, 6]) for (const d of [0.25, 0.5, 0.75, 1.5, 2]) {
+    const s = createMatch({ seed, roster: DEFAULT_ROSTER, weapons: withPickups(d) });
+    const slotKinds = s.pickups.map((p) => p.type);
+    // above 1 the same kinds fill every slot; below 1 every slot gets the same number of spots
+    if (d > 1) for (const t of new Set(slotKinds)) assert.equal(slotKinds.filter((x) => x === t).length % DEFAULT_ROSTER.length, 0, `${t} same in every slot (seed ${seed}, density ${d})`);
+    else assert.equal(new Set(slotCounts(s, DEFAULT_ROSTER.length)).size, 1, `equal count per slot (seed ${seed}, density ${d})`);
+    if (d < 1) assert.ok(s.pickups.length < full); else assert.ok(s.pickups.length > full);
+  }
+  assert.equal(createMatch({ seed: 5, roster: DEFAULT_ROSTER, weapons: withPickups(2) }).pickups.length, 2 * full, 'density 2 doubles the slot spots');
+  // clamped and snapped to the step; a config without the fields means the original behaviour
+  assert.deepEqual(normaliseWeapons(withPickups(9, -1)).pickups, { density: 2, respawn: 0 });
+  assert.deepEqual(normaliseWeapons({ pickups: { density: 0.6 } }).pickups, { density: 0.5, respawn: 1 });
+  assert.deepEqual(normaliseWeapons({}).pickups, { density: 1, respawn: 1 });
+  // respawn 0: a taken pickup never comes back, and the rules text says so
+  const s = createMatch({ seed: 1, roster: ['jev', 'luna'], weapons: withPickups(1, 0) });
+  const me = s.fighters[0], p = s.pickups.find((x) => x.type === 'shotgun');
+  me.x = p.x; me.y = p.y;
+  step(s);
+  assert.equal(p.active, false, 'taken');
+  me.x = CENTRE - 150; me.y = CENTRE; // walk away
+  for (let i = 0; i < 2000 && !s.over; i++) step(s);
+  assert.equal(p.active, false, 'never respawned');
+  assert.match(rulesText(withPickups(1, 0)), /Pickups do not respawn\./);
+  assert.match(rulesText(withPickups(1, 0.5)), /Pickups respawn after 30 s\./);
+  assert.match(rulesText(), /Pickups respawn after 15 s\./);
+});
+
+test('pickup settings are part of the config: id, summary, deterministic replay; older logs still verify', () => {
+  const cfg = withPickups(0.5, 2);
+  assert.notEqual(configId(normaliseWeapons(cfg)), configId(normaliseWeapons(withPickups(1, 2))));
+  assert.match(configSummary(normaliseWeapons(cfg)), /pickups x0\.5, respawn x2/);
+  // the original 1 and 1 keep the id a config had before these settings existed
+  const old = clone(DEFAULT_WEAPON_CONFIG); delete old.pickups;
+  assert.equal(configId(normaliseWeapons(old)), configId(normaliseWeapons(withPickups(1, 1))));
+  const a = runHeadlessMock({ seed: 9, weapons: cfg }), b = runHeadlessMock({ seed: 9, weapons: cfg });
+  assert.equal(a.log.result.hash, b.log.result.hash, 'same config + seed, same match');
+  assert.deepEqual(a.log.weapons.pickups, { density: 0.5, respawn: 2 });
+  assert.equal(hashState(runLog(clone(a.log))), a.log.result.hash, 'replay verifies');
+  const tampered = clone(a.log); tampered.weapons.pickups.respawn = 1;
+  assert.notEqual(hashState(runLog(tampered)), a.log.result.hash, 'pickup settings are a hash input');
+  // a log recorded without the fields replays as the original (density 1, respawn 1)
+  const orig = runHeadlessMock({ seed: 9, weapons: withPickups(1, 1) }).log;
+  const legacy = clone(orig); delete legacy.weapons.pickups;
+  assert.equal(hashState(runLog(legacy)), orig.result.hash);
 });
 
 // ---------- leaderboard
@@ -492,6 +584,215 @@ test('bundled example replay logs verify', () => {
   const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.json')) : [];
   for (const f of files) {
     const log = JSON.parse(fs.readFileSync(new URL(f, dir), 'utf8'));
+    const original = clone(log);
+    const normalised = normaliseLog(log);
+    assert.deepEqual(log, original, 'loading leaves the recorded log intact');
+    assert.deepEqual(normaliseLog(normalised), normalised, 'normalisation is idempotent');
+    for (let i = 0; i < log.decisions.length; i++) {
+      const before = log.decisions[i], after = normalised.decisions[i];
+      for (const [old, action] of [['strafe_left', 'spin_left'], ['strafe_right', 'spin_right']]) {
+        if (before.a === old) assert.equal(after.a, action);
+        if (before.probs && old in before.probs) {
+          assert.equal(after.probs[action], before.probs[old]);
+          assert.ok(!(old in after.probs));
+        }
+      }
+    }
     assert.equal(hashState(runLog(log)), log.result.hash, f);
+    const legacy = new ReplayCursor(log), current = new ReplayCursor(normalised);
+    while (!legacy.state.over) {
+      assert.deepEqual(legacy.tick(), current.tick(), 'replayed decision lists use current names');
+      assert.equal(hashState(legacy.state), hashState(current.state), `${f}: tick ${legacy.state.tick}`);
+    }
+    assert.equal(hashState(current.state), log.result.hash, f);
   }
+});
+
+test('leaderboard: standings sort by any column, nulls sink, most-kills ids', () => {
+  const rows = [{ id: 'a', wins: 3, kills: 2, meanMs: 300 }, { id: 'b', wins: 1, kills: 9, meanMs: null }, { id: 'c', wins: 2, kills: 9, meanMs: 100 }];
+  assert.deepEqual(sortStandings(rows, 'kills', 1).map((r) => r.id), ['b', 'c', 'a']);
+  assert.deepEqual(sortStandings(rows, 'wins', -1).map((r) => r.id), ['b', 'c', 'a']);
+  assert.deepEqual(sortStandings(rows, 'meanMs', -1).map((r) => r.id), ['c', 'a', 'b']);
+  assert.equal(sortStandings(rows, null), rows);
+  assert.deepEqual(mostKillsIds(rows), ['b', 'c']);
+  assert.deepEqual(mostKillsIds([{ id: 'x', kills: 0 }]), []);
+});
+
+test('pickups below density 1 thin per slot: no weapon kind vanishes, equal count per slot', () => {
+  const n = DEFAULT_ROSTER.length;
+  const kinds = ['shotgun', 'rifle', 'uzi', 'missile', 'medpack'];
+  const fullCount = createMatch({ seed: 1, roster: DEFAULT_ROSTER, weapons: withPickups(1) }).pickups.length;
+  for (let seed = 1; seed <= 40; seed++) {
+    const s = createMatch({ seed, roster: DEFAULT_ROSTER, weapons: clone(DEFAULT_WEAPON_CONFIG) });
+    const have = new Set(s.pickups.map((p) => p.type));
+    for (const k of kinds) assert.ok(have.has(k), `seed ${seed}: ${k} present at start`);
+    assert.ok(!have.has('flamethrower'), 'a disabled weapon never spawns');
+    const counts = slotCounts(s, n);
+    assert.equal(new Set(counts).size, 1, `seed ${seed}: equal count per slot ${counts}`);
+    // close to density x the full count (slot spots rounded per slot)
+    assert.ok(Math.abs(s.pickups.length - 0.75 * fullCount) <= n / 2 + 1, `seed ${seed}: ${s.pickups.length} vs ${fullCount}`);
+    // deterministic
+    const again = createMatch({ seed, roster: DEFAULT_ROSTER, weapons: clone(DEFAULT_WEAPON_CONFIG) });
+    assert.deepEqual(again.pickups, s.pickups);
+  }
+  // the guarantee holds even at the lowest density and with few fighters
+  for (let seed = 1; seed <= 40; seed++) for (const roster of [DEFAULT_ROSTER, DEFAULT_ROSTER.slice(0, 2)]) {
+    const s = createMatch({ seed, roster, weapons: withPickups(0.25) });
+    const have = new Set(s.pickups.map((p) => p.type));
+    for (const k of kinds) assert.ok(have.has(k), `seed ${seed}, ${roster.length} fighters, density 0.25: ${k} present`);
+    assert.equal(new Set(slotCounts(s, roster.length)).size, 1);
+  }
+  // kinds vary between slots (the old bug filled the same templates everywhere)
+  const varied = [1, 2, 3, 4, 5].some((seed) => {
+    const s = createMatch({ seed, roster: DEFAULT_ROSTER, weapons: clone(DEFAULT_WEAPON_CONFIG) });
+    return s.pickups.filter((p) => p.type === 'shotgun').length % n !== 0;
+  });
+  assert.ok(varied, 'thinning differs between slots');
+  assert.equal(createMatch({ seed: 3, roster: DEFAULT_ROSTER, weapons: withPickups(0) }).pickups.length, 0, 'density 0: none');
+  // replay verifies with the default (thinned) config
+  const a = runHeadlessMock({ seed: 4, weapons: clone(DEFAULT_WEAPON_CONFIG) });
+  assert.equal(hashState(runLog(clone(a.log))), a.log.result.hash, 'replay verifies');
+  assert.equal(runHeadlessMock({ seed: 4, weapons: clone(DEFAULT_WEAPON_CONFIG) }).log.result.hash, a.log.result.hash);
+});
+
+test('leaderboard cost: the record carries cost and calls, averages exclude old records, the bot has none', () => {
+  const s = createMatch({ seed: 2, roster: ['jev', 'gemini', 'bot'] });
+  s.tick = 2700; s.over = true; s.ranking = ['jev', 'gemini', 'bot']; s.winner = 'jev';
+  const stats = { jev: { calls: 100, decisions: 100, cost: 0.005 }, gemini: { calls: 50, decisions: 50, cost: 0.03, costEst: true },
+    bot: { calls: 200, decisions: 200, cost: 0 } };
+  const rec = cleanRecord(buildRecord({ state: s, mode: 'live', weapons: DEFAULT_WEAPON_CONFIG, stats }));
+  const by = Object.fromEntries(rec.fighters.map((f) => [f.id, f]));
+  assert.equal(by.jev.cost, 0.005); assert.equal(by.jev.calls, 100); assert.equal(by.gemini.costEst, true);
+  assert.equal(by.bot.cost, null, 'the bot is free and shows -');
+  assert.equal(cleanRecord({ ...rec, fighters: rec.fighters.map((f) => ({ ...f, cost: -5 })) }).fighters[0].cost, 0, 'clamped');
+  const old = { ...rec, fighters: rec.fighters.map(({ cost, calls, costEst, ...f }) => f) }; // stored before cost tracking
+  const rec2 = cleanRecord(buildRecord({ state: s, mode: 'live', weapons: DEFAULT_WEAPON_CONFIG,
+    stats: { ...stats, jev: { calls: 300, decisions: 300, cost: 0.015 } } }));
+  const rows = Object.fromEntries(aggregate([old, rec, rec2]).map((a) => [a.id, a]));
+  assert.equal(rows.jev.played, 3);
+  assert.ok(Math.abs(rows.jev.totalCost - 0.02) < 1e-12);
+  assert.ok(Math.abs(rows.jev.avgCostGame - 0.01) < 1e-12, 'old record left out of the average');
+  assert.ok(Math.abs(rows.jev.costPerCall - 0.02 / 400) < 1e-12);
+  assert.equal(rows.jev.costEst, false); assert.equal(rows.gemini.costEst, true);
+  assert.equal(rows.bot.totalCost, null); assert.equal(rows.bot.costPerCall, null);
+  assert.equal(aggregate([old]).find((a) => a.id === 'jev').avgCostGame, null, 'old-only shows -');
+  assert.deepEqual(sortStandings(Object.values(rows), 'costPerCall', -1).map((r) => r.id), ['jev', 'gemini', 'bot']);
+  // the proxy reports where the cost came from
+  const probs = { advance: 1, retreat: 0, spin_left: 0, spin_right: 0, shoot: 0, take_cover: 0, grab_pickup: 0, hold: 0 };
+  const ans = { answers: { action: { choice: 'advance', probabilities: probs } } };
+  const tok = parseResponse(rosterById.jev, { ...ans, usage: { inputTokens: 1235 } });
+  assert.equal(tok.costSource, 'tokens'); assert.ok(Math.abs(tok.cost - 1235 * rosterById.jev.price.in) < 1e-15);
+  assert.equal(parseResponse(rosterById.jev, ans).costSource, 'none');
+  assert.equal(parseResponse(rosterById.jev, { ...ans, providerMetadata: { gateway: { cost: '0.00001' } } }).costSource, 'gateway');
+});
+
+test('celebration text: last standing, most HP, tie-break, all down', () => {
+  const end = (setup) => { const s = createMatch({ seed: 1, roster: ['jev', 'luna', 'laya'] }); setup(s.fighters); s.tick = 2700; finishFor(s); return s; };
+  const finishFor = (s) => { // the sim's own order: alive, HP, time of death, kills, roster order
+    const r = [...s.fighters].sort((a, b) => (b.alive - a.alive) || (b.hp - a.hp) || ((b.deathTick ?? 1e9) - (a.deathTick ?? 1e9)) || (b.kills - a.kills) || (a.i - b.i));
+    s.over = true; s.ranking = r.map((f) => f.id); s.winner = s.ranking[0];
+  };
+  const down = (f, t) => { f.alive = false; f.hp = 0; f.deathTick = t; };
+  assert.deepEqual(celebrationText(end((f) => { down(f[1], 50); down(f[2], 60); })), { allDown: false, line: 'Last one standing', tieBreak: null });
+  assert.equal(celebrationText(end((f) => { f[0].hp = 40; f[1].hp = 70; down(f[2], 60); })).line, 'Most health when time ran out');
+  const tie = celebrationText(end((f) => { f[0].hp = 50; f[1].hp = 50; f[1].kills = 1; down(f[2], 60); }));
+  assert.equal(tie.allDown, false); assert.match(tie.tieBreak, /tie-break/);
+  const all = celebrationText(end((f) => { down(f[0], 10); down(f[1], 20); down(f[2], 30); }));
+  assert.equal(all.allDown, true);
+});
+
+// Model aims changes the action vocabulary only for explicitly enabled matches.
+import { actionsFor, decisionQuestions } from '../public/shared.js';
+test('model aims: OFF keeps hashes and prompts; ON records targets and replays exactly', () => {
+  for (const [seed, hash] of [[1, '7ac48c57'], [42, 'e0c8807c']]) {
+    const { log } = runHeadlessMock({ seed });
+    assert.equal(log.result.hash, hash);
+    assert.equal(hashState(runLog(log)), hash);
+    assert.ok(!log.weapons.modelAims);
+  }
+  for (const seed of [1, 42]) {
+    const { log } = runHeadlessMock({ seed, modelAims: true, roster: ROSTER.map((r) => r.id) });
+    assert.equal(log.modelAims, true);
+    assert.ok(log.decisions.some((d) => d.a?.startsWith('shoot_')));
+    assert.ok(!log.decisions.some((d) => d.a === 'shoot'));
+    assert.equal(hashState(runLog(log)), log.result.hash);
+    const off = clone(log); delete off.modelAims;
+    assert.ok(!new ReplayCursor(off).state.weapons.modelAims, 'missing log flag means OFF');
+    assert.notEqual(hashState(runLog(off)), log.result.hash);
+    assert.notEqual(configId(normaliseWeapons({ ...log.weapons, modelAims: false })), log.weaponsId);
+  }
+});
+
+test('model aims: one dynamic choice per living enemy, same scene and full text across models', () => {
+  const s = createMatch({ seed: 1, roster: DEFAULT_ROSTER, weapons: { ...DEFAULT_WEAPON_CONFIG, modelAims: true } });
+  s.fighters.find((f) => f.id === 'laya').alive = false;
+  const scene = sceneFor(s, 'jev');
+  const options = actionsFor(scene);
+  assert.ok(options.includes('shoot_luna'));
+  assert.ok(!options.includes('shoot_laya') && !options.includes('shoot_jev') && !options.includes('shoot'));
+  const a = buildRequest(rosterById.jev, scene), b = buildRequest(rosterById.luna, scene);
+  const c = buildRequest(rosterById.scaledown, scene), gem = buildRequest(rosterById.gemini, scene);
+  assert.deepEqual(Object.keys(a.body.questions), ['action']);
+  assert.deepEqual(Object.keys(decisionQuestions('compact', scene).action.criteria), options);
+  assert.deepEqual(a.body.questions, b.body.questions);
+  assert.deepEqual(a.body.questions, c.body.questions);
+  assert.equal(a.body.state, b.body.state);
+  assert.equal(a.body.state, c.body.state.text);
+  assert.equal(a.body.state, gem.body.messages[1].content);
+  assert.deepEqual(gem.body.response_format.json_schema.schema.properties.action.enum, options);
+  for (const id of ['jev', 'luna', 'scaledown']) {
+    assert.equal(parseResponse(rosterById[id], { answers: { action: { choice: 'shoot_luna', probabilities: { shoot_luna: 1 } } } }, scene).action, 'shoot_luna');
+    assert.throws(() => parseResponse(rosterById[id], { answers: { action: { choice: 'shoot_laya' } } }, scene));
+    assert.throws(() => parseResponse(rosterById[id], { answers: { action: { choice: 'shoot' } } }, scene));
+  }
+  assert.equal(parseResponse(rosterById.gemini, { choices: [{ message: { content: '{"action":"shoot_luna","confidence":1}' } }] }, scene).action, 'shoot_luna');
+});
+
+test('model aims: chosen enemy is faced and fired at; blocked and dead targets never fall back', () => {
+  const s = createMatch({ seed: 1, roster: ['jev', 'luna', 'laya'], weapons: { ...DEFAULT_WEAPON_CONFIG, modelAims: true } });
+  s.pillars = []; s.pickups = [];
+  const [me, near, target] = s.fighters;
+  me.x = CENTRE; me.y = CENTRE; near.x = CENTRE + 40; near.y = CENTRE;
+  target.x = CENTRE; target.y = CENTRE - 100;
+  applyAction(s, 'jev', 'shoot_laya'); step(s);
+  assert.equal(me.shots, 1); assert.equal(me.face, -Math.PI / 2);
+  assert.ok(s.bullets[0].vy < -6 && Math.abs(s.bullets[0].vx) < 1, 'north, not nearer east enemy');
+  me.cd = 0; s.pillars = [{ x: CENTRE, y: CENTRE - 50 }];
+  const shots = me.shots;
+  me.weapon = 'rifle'; me.ammo = 5;
+  const rng = s.rng;
+  step(s);
+  assert.equal(me.ammo, 5, 'blocked attempt spends no ammo');
+  assert.equal(me.cd, 0, 'blocked attempt starts no cooldown');
+  assert.equal(s.rng, rng, 'blocked attempt draws no spread randomness');
+  assert.equal(me.shots, shots); assert.equal(me.lastShot, 'blocked');
+  assert.equal(sceneFor(s, 'jev').last_shot.result, 'blocked');
+  // The older airborne volley cannot replace this newer blocked attempt's feedback.
+  for (let i = 0; i < 10; i++) step(s);
+  assert.equal(me.lastShot, 'blocked');
+  target.alive = false; me.cd = 0;
+  applyAction(s, 'jev', 'shoot_laya'); step(s);
+  assert.equal(me.shots, shots, 'dead target does not shoot nearer enemy');
+});
+
+test('model aims: Laya worst case remains under the compact budget with weapon mechanics', () => {
+  const scene = { ...worstCaseScene(), model_aims: true };
+  const text = compactStateText(scene, WORST_WEAPONS);
+  const tokens = questionTokens(text, 'compact', scene);
+  assert.ok(tokens <= COMPACT_TOKEN_BUDGET, `${tokens} > ${COMPACT_TOKEN_BUDGET}`);
+  assert.equal(checkBudget(rosterById.laya, text, 0, scene).over, false);
+  assert.match(text, /shotgun:near spread/);
+  assert.match(text, /missile:mid blast close, hurts you too/);
+  assert.match(text, /flamethrower:close burns while in cone/);
+});
+
+test('model aims: leaderboard retains per-shooter target-choice counts only when ON', () => {
+  const s = createMatch({ seed: 1, roster: ['jev', 'luna'], weapons: { ...DEFAULT_WEAPON_CONFIG, modelAims: true } });
+  s.ranking = ['jev', 'luna']; s.winner = 'jev';
+  const rec = cleanRecord(buildRecord({ state: s, mode: 'mock', weapons: s.weapons,
+    stats: { jev: { targetsChosen: { luna: 3 } } } }));
+  assert.equal(rec.modelAims, true);
+  assert.deepEqual(rec.fighters[0].targetsChosen, { luna: 3 });
+  assert.deepEqual(rec.fighters[1].targetsChosen, {});
+  assert.match(rec.cfgSummary, /model aims ON/);
 });

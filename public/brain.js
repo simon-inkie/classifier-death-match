@@ -12,7 +12,7 @@ export function botScores(scene) {
   const med = scene.pickups.find((p) => p.type === 'medpack');
   const gun = scene.pickups.find((p) => p.type !== 'medpack');
   if (scene.incoming && scene.incoming.eta_ticks < 8) {
-    const free = ['strafe_left', 'strafe_right'];
+    const free = ['spin_left', 'spin_right'];
     s[free[(scene.incoming.eta_ticks + scene.hp) % 2]] += 2.5;
   }
   if (scene.hp < 45 && med && med.dist !== 'far') s.grab_pickup += 3;
@@ -32,12 +32,20 @@ export function botScores(scene) {
   return s;
 }
 
+function aimedAnswer(scene, ans) {
+  if (!scene.model_aims) return ans;
+  const target = scene.enemies.find((e) => e.los) || scene.enemies[0];
+  const action = ans.action === 'shoot' ? (target ? `shoot_${target.name}` : 'hold') : ans.action;
+  const probs = ans.probs && Object.fromEntries(Object.entries(ans.probs).filter(([a]) => a !== 'shoot'));
+  if (probs) for (const e of scene.enemies) probs[`shoot_${e.name}`] = e === target ? (ans.probs.shoot || 0) : 0;
+  return { ...ans, action, probs };
+}
 export function botDecide(scene) {
   const s = botScores(scene);
   let best = ACTIONS[0];
   for (const a of ACTIONS) if (s[a] > s[best]) best = a;
   const probs = Object.fromEntries(ACTIONS.map((a) => [a, a === best ? 1 : 0]));
-  return { action: best, probs };
+  return aimedAnswer(scene, { action: best, probs });
 }
 
 // A mock model: softmax over the bot heuristic plus noise. Skill sharpens it.
@@ -56,9 +64,9 @@ export function mockDecide(fid, scene, rnd) {
   if (rosterById[fid].kind === 'chat') {
     // the chat baseline only self-reports a confidence for its pick
     const conf = Math.min(0.99, Math.round((0.7 + rnd() * 0.29) * 100) / 100);
-    return { action, probs: null, confidence: conf };
+    return aimedAnswer(scene, { action, probs: null, confidence: conf });
   }
-  return { action, probs: Object.fromEntries(ACTIONS.map((a, i) => [a, p[i]])) };
+  return aimedAnswer(scene, { action, probs: Object.fromEntries(ACTIONS.map((a, i) => [a, p[i]])) });
 }
 
 export function mockLatency(fid, rnd) {
@@ -81,8 +89,8 @@ export function rosterEntry(id) {
 export const MODEL_FIGHTERS = DEFAULT_ROSTER; // jev, luna, laya, scaledown (Gemini and the bot are opt-in)
 // weapons: a weapon config (default: the game default, flamethrower off). It is saved in the log.
 export function runHeadlessMock({ seed = 1, bot = false, roster = bot ? [...MODEL_FIGHTERS, 'bot'] : MODEL_FIGHTERS,
-  weapons = DEFAULT_WEAPON_CONFIG } = {}) {
-  const cfg = normaliseWeapons(weapons);
+  weapons = DEFAULT_WEAPON_CONFIG, modelAims = false } = {}) {
+  const cfg = normaliseWeapons(modelAims ? { ...weapons, modelAims: true } : weapons);
   const state = createMatch({ seed, roster, weapons: cfg });
   const rnd = makeRng(seed ^ 0x5eed);
   const minGap = Math.round(TICK_HZ / 10);
@@ -116,7 +124,7 @@ export function runHeadlessMock({ seed = 1, bot = false, roster = bot ? [...MODE
     step(state);
   }
   const log = {
-    version: 1, mode: 'headless-mock', seed, createdAt: new Date().toISOString(), bot: roster.includes('bot'),
+    version: 1, modelAims: Boolean(cfg.modelAims), mode: 'headless-mock', seed, createdAt: new Date().toISOString(), bot: roster.includes('bot'),
     roster: roster.map((id) => rosterEntry(id)),
     weapons: cfg, weaponsId: configId(cfg), weaponsSummary: configSummary(cfg),
     decisions,

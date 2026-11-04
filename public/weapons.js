@@ -44,10 +44,21 @@ function base(on) {
   }
   return c;
 }
-// The game default: every weapon on except the flamethrower.
-export const DEFAULT_WEAPON_CONFIG = (() => { const c = base(true); c.flamethrower.on = false; return c; })();
+// Pickup knobs, stored in the same config. density scales how many pickup spots are filled at the
+// start (0 = none, 2 = double); respawn scales how fast a taken pickup comes back (0 = never).
+// The original behaviour is 1 and 1: a config or log without these fields means exactly that.
+export const PICKUP_PARAMS = {
+  density: { label: 'Starting pickup density', min: 0, max: 2, step: 0.25 },
+  respawn: { label: 'Respawn rate', min: 0, max: 3, step: 0.25 },
+};
+export const ORIGINAL_PICKUPS = { density: 1, respawn: 1 };
+export const DEFAULT_PICKUPS = { density: 0.75, respawn: 1 };
+const isOriginalPickups = (p) => p.density === 1 && p.respawn === 1;
+
+// The game default: every weapon on except the flamethrower, and a sparser start than the original.
+export const DEFAULT_WEAPON_CONFIG = (() => { const c = base(true); c.flamethrower.on = false; c.pickups = { ...DEFAULT_PICKUPS }; return c; })();
 // Logs recorded before configs existed had every weapon on at the default numbers.
-export const LEGACY_WEAPON_CONFIG = base(true);
+export const LEGACY_WEAPON_CONFIG = (() => { const c = base(true); c.pickups = { ...ORIGINAL_PICKUPS }; return c; })();
 
 // Validate and clamp anything (localStorage, a log file, a request body) into a full config.
 // Unknown keys are dropped, missing or junk values fall back to the default, the pistol is always on.
@@ -63,6 +74,15 @@ export function normaliseWeapons(input, fallback = DEFAULT_WEAPON_CONFIG) {
       out[w][k] = Number.isFinite(n) && s[k] !== null && s[k] !== '' ? Math.min(max, Math.max(min, Math.round(n))) : fallback[w][k];
     }
   }
+  // Pickups: clamped and snapped to the step. Missing means the original behaviour (1), never the
+  // current default, so a log or request from before these knobs existed keeps meaning what it meant.
+  const sp = src.pickups && typeof src.pickups === 'object' ? src.pickups : {};
+  out.pickups = {};
+  for (const [k, { min, max, step }] of Object.entries(PICKUP_PARAMS)) {
+    const n = Number(sp[k]);
+    out.pickups[k] = Number.isFinite(n) && sp[k] !== null && sp[k] !== '' ? Math.min(max, Math.max(min, Math.round(n / step) * step)) : ORIGINAL_PICKUPS[k];
+  }
+  if (src.modelAims === true) out.modelAims = true;
   return out;
 }
 
@@ -79,7 +99,12 @@ export function enabledWeapons(cfg) { return WEAPON_NAMES.filter((w) => cfg[w].o
 
 // Short stable id for a config (FNV-1a over its canonical JSON). Same config, same id, any machine.
 export function configId(cfg) {
-  const s = JSON.stringify(WEAPON_NAMES.map((w) => [w, cfg[w].on, ...WEAPON_PARAMS[w].map((k) => cfg[w][k])]));
+  const parts = WEAPON_NAMES.map((w) => [w, cfg[w].on, ...WEAPON_PARAMS[w].map((k) => cfg[w][k])]);
+  // pickups only count when they differ from the original, so ids from before they existed are unchanged
+  const p = cfg.pickups || ORIGINAL_PICKUPS;
+  if (!isOriginalPickups(p)) parts.push(['pickups', p.density, p.respawn]);
+  if (cfg.modelAims) parts.push(['modelAims', true]);
+  const s = JSON.stringify(parts);
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
   return h.toString(16).padStart(8, '0');
@@ -92,5 +117,7 @@ export function configSummary(cfg) {
     for (const k of WEAPON_PARAMS[w]) if (cfg[w][k] !== WEAPONS[w][k]) changed.push(`${w} ${k} ${cfg[w][k]}`);
   }
   const on = enabledWeapons(cfg).join(', ');
-  return changed.length ? `${on}; tuned: ${changed.join(', ')}` : on;
+  const p = cfg.pickups || ORIGINAL_PICKUPS;
+  const pk = isOriginalPickups(p) ? '' : `; pickups x${p.density}, ${p.respawn ? `respawn x${p.respawn}` : 'no respawn'}`;
+  return (changed.length ? `${on}; tuned: ${changed.join(', ')}` : on) + pk + (cfg.modelAims ? '; model aims ON' : '; model aims OFF');
 }

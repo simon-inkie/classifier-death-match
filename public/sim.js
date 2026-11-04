@@ -2,8 +2,8 @@
 // Same seed + same tick-keyed action log => identical match, in browser or Node.
 
 export const TICK_HZ = 30;
-export const MATCH_TICKS = 90 * TICK_HZ;
-export const RING_START = 60 * TICK_HZ;
+export const MATCH_TICKS = 60 * TICK_HZ;
+export const RING_START = 30 * TICK_HZ;
 export const CENTRE = 200;
 export const ARENA_R = 190;
 export const RING_MIN = 36;
@@ -79,6 +79,12 @@ export function hasLos(state, a, b) {
   return !segBlocked(state, a.x, a.y, b.x, b.y);
 }
 
+// Ticks before a taken pickup comes back: the base time divided by the config's respawn rate (0 = never).
+export function respawnTicks(cfg) {
+  const rate = cfg?.pickups?.respawn ?? 1;
+  return rate > 0 ? Math.round(PICKUP_RESPAWN / rate) : Infinity;
+}
+
 // ---------- match creation
 // weapons: a weapon config (see weapons.js). Omitted = the legacy all-on config, and the state hash
 // is then the same as before configs existed, so older logs still verify.
@@ -88,21 +94,68 @@ export function createMatch({ seed = 1, roster, weapons }) {
   const n = roster.length;
   const offset = ((seed % n) + n) % n; // rotate spawn order between matches
   const slotAngle = (k) => -Math.PI / 2 + (2 * Math.PI * k) / n;
-  const pillars = [], pickups = [];
+  const pillars = [];
   const perm = PERMS[((seed % 6) + 6) % 6].map((i) => NEW_WEAPONS[i]);
+  // Pickup spots as templates: [type, on the slot angle (a) or between slots (pa), radius]. Every slot
+  // gets the same set, so the layout stays rotationally symmetric (fair) for any n. The reserve set is
+  // only used above density 1; its spots sit clear of the base spots, the pillars and the spawns.
+  // The rifle sits a quarter slot off the axes ('qa' = a quarter slot after the spawn angle, 'qb' = before),
+  // clear of the logo decal at the centre, the pillars (on 'pa') and the spawns, and further from its own
+  // spawn than the shotgun is.
+  const BASE = [['shotgun', 'a', 112], ['medpack', 'pa', 150], [perm[0], 'a', 62], [perm[1], 'pa', 122], [perm[2], 'pa', 50], ['rifle', 'qa', 105]];
+  const RESERVE = [['shotgun', 'a', 138], ['medpack', 'pa', 172], [perm[0], 'a', 88], [perm[1], 'pa', 28], [perm[2], 'a', 36], ['rifle', 'qb', 125]];
   // A disabled weapon simply never spawns; the pillars and every other pickup keep their places.
-  const pick = (type, ang, r) => (type === 'medpack' || on.has(type)) && pickups.push({ type, x: CENTRE + Math.cos(ang) * r, y: CENTRE + Math.sin(ang) * r, active: true, respawn: 0 });
-  // Every slot gets the same set, so the layout stays rotationally symmetric (fair) for any n.
-  for (let k = 0; k < n; k++) {
-    const a = slotAngle(k), pa = a + Math.PI / n;
-    pillars.push({ x: CENTRE + Math.cos(pa) * 88, y: CENTRE + Math.sin(pa) * 88 });
-    pick('shotgun', a, 112);
-    pick('medpack', pa, 150);
-    pick(perm[0], a, 62);
-    pick(perm[1], pa, 122);
-    pick(perm[2], pa, 50);
+  const usable = (set) => set.filter(([type]) => type === 'medpack' || on.has(type));
+  const { density } = cfg.pickups;
+  let base = usable(BASE), reserve = [];
+  let perSlot = null; // density below 1: the templates each slot keeps, chosen slot by slot
+  if (density !== 1) {
+    // Choose which spots are filled, from the seed, on a PRNG of its own (the match PRNG is untouched,
+    // so density 1 is bit for bit the original).
+    const rnd = makeRng((seed ^ 0x9e3779b9) | 0);
+    const shuffled = (len) => {
+      const idx = Array.from({ length: len }, (_, i) => i);
+      for (let i = len - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [idx[i], idx[j]] = [idx[j], idx[i]]; }
+      return idx;
+    };
+    if (density > 1) {
+      const set = usable(RESERVE), idx = shuffled(set.length), want = (density - 1) * set.length;
+      const keep = new Set(idx.slice(0, Math.floor(want) + (rnd() < want - Math.floor(want) ? 1 : 0)));
+      reserve = set.filter((_, i) => keep.has(i)); // the same reserve spots in every slot: still symmetric
+    } else if (density > 0) {
+      // Thin slot by slot, so a whole kind never drops off the map. Fairness is an equal COUNT per slot
+      // (the kinds may differ), at least enough for every kind to fit somewhere on the map.
+      const m = base.length;
+      const c = Math.min(m, Math.max(Math.round(density * m), Math.ceil(m / n)));
+      perSlot = Array.from({ length: n }, () => new Set(shuffled(m).slice(0, c)));
+      // Guarantee: every enabled kind (and the medpack) is somewhere on the map. A missing kind takes the
+      // place of a seeded spot whose kind is present more than once; n * c >= m means one always exists.
+      const count = new Array(m).fill(0);
+      for (const s of perSlot) for (const i of s) count[i]++;
+      for (let x = 0; x < m; x++) {
+        if (count[x]) continue;
+        const cands = [];
+        perSlot.forEach((s, k) => { for (const y of s) if (count[y] > 1) cands.push([k, y]); });
+        const [k, y] = cands[Math.floor(rnd() * cands.length)];
+        perSlot[k].delete(y); perSlot[k].add(x); count[y]--; count[x]++;
+      }
+    }
   }
-  pick('rifle', 0, 0);
+  const pickups = [];
+  const place = (k, set) => {
+    const a = slotAngle(k), pa = a + Math.PI / n;
+    const angleAt = { a, pa, qa: a + Math.PI / (2 * n), qb: a - Math.PI / (2 * n) };
+    for (const [type, at, r] of set) {
+      const ang = angleAt[at];
+      pickups.push({ type, x: CENTRE + Math.cos(ang) * r, y: CENTRE + Math.sin(ang) * r, active: true, respawn: 0 });
+    }
+  };
+  for (let k = 0; k < n; k++) {
+    const pa = slotAngle(k) + Math.PI / n;
+    pillars.push({ x: CENTRE + Math.cos(pa) * 88, y: CENTRE + Math.sin(pa) * 88 });
+    if (density > 0) place(k, perSlot ? base.filter((_, i) => perSlot[k].has(i)) : base); // template order
+  }
+  for (let k = 0; k < n; k++) place(k, reserve);
   const fighters = roster.map((id, i) => {
     const a = slotAngle((i + offset) % n);
     const x = CENTRE + Math.cos(a) * 160, y = CENTRE + Math.sin(a) * 160;
@@ -114,7 +167,7 @@ export function createMatch({ seed = 1, roster, weapons }) {
       dealt: 0 }; // damage dealt to others (stats only, not hashed)
   });
   return { seed, tick: 0, rng: (seed * 2654435761) | 0, fighters, pillars, pickups, bullets: [],
-    weapons: cfg, W: weaponTable(cfg), cfgId: weapons ? configId(cfg) : null,
+    weapons: cfg, W: weaponTable(cfg), cfgId: weapons ? configId(cfg) : null, respawnTicks: respawnTicks(cfg),
     ringR: ARENA_R, over: false, winner: null, ranking: null, events: [] };
 }
 
@@ -194,9 +247,9 @@ function moveDir(state, f, act) {
       return ed < 18 ? [0, 0] : steer(state, f, ux, uy, ed);
     case 'retreat':
       return [-ux, -uy];
-    case 'strafe_left':
+    case 'spin_left':
       return [-uy, ux];
-    case 'strafe_right':
+    case 'spin_right':
       return [uy, -ux];
     case 'take_cover': {
       let best = null, bd = Infinity;
@@ -326,11 +379,16 @@ export function step(state) {
     if (f.cd > 0) f.cd--;
     const act = effectiveAction(state, f);
     const losTarget = nearestEnemy(state, f, true);
-    const anyTarget = losTarget || nearestEnemy(state, f, false);
+    const aimed = state.weapons.modelAims && act?.startsWith('shoot_');
+    const chosen = aimed ? state.fighters.find((e) => e.id === act.slice(6) && e !== f && e.alive) : null;
+    const anyTarget = aimed ? chosen : losTarget || nearestEnemy(state, f, false);
     let [dx, dy] = moveDir(state, f, act);
     if (anyTarget) f.face = Math.atan2(anyTarget.y - f.y, anyTarget.x - f.x);
     else if (dx || dy) f.face = Math.atan2(dy, dx);
-    if (act === 'shoot' && losTarget && f.cd <= 0) fire(state, f, losTarget);
+    if (aimed && chosen && f.cd <= 0) {
+      if (hasLos(state, f, chosen)) fire(state, f, chosen);
+      else resolveShot(state, f, ++f.vol, 'blocked');
+    } else if (!state.weapons.modelAims && act === 'shoot' && losTarget && f.cd <= 0) fire(state, f, losTarget);
     f.x += dx * SPEED; f.y += dy * SPEED;
     resolve(state, f);
     for (const p of state.pickups) {
@@ -341,7 +399,7 @@ export function step(state) {
       } else {
         f.weapon = p.type; f.ammo = state.W[p.type].ammo;
       }
-      p.active = false; p.respawn = t + PICKUP_RESPAWN;
+      p.active = false; p.respawn = t + state.respawnTicks; // Infinity when respawn is off: never back
       state.events.push({ type: 'pickup', id: f.id, kind: p.type, x: p.x, y: p.y });
     }
     if (hyp(f.x - CENTRE, f.y - CENTRE) > state.ringR && t % 3 === 0) {
@@ -352,14 +410,16 @@ export function step(state) {
 
   burn(state);
 
-  // fighter separation, fixed order
+  // fighter separation, fixed order: equal push each, along the line between the centres. Two fighters
+  // on exactly the same spot have no line, so they split along x, the earlier roster slot to the west
+  // (otherwise they would never separate). That case never arises in a recorded match, so logs still verify.
   const fs = state.fighters;
   for (let a = 0; a < fs.length; a++) for (let b = a + 1; b < fs.length; b++) {
     const A = fs[a], B = fs[b];
     if (!A.alive || !B.alive) continue;
     const dx = B.x - A.x, dy = B.y - A.y, d = hyp(dx, dy), min = FIGHTER_R * 2;
-    if (d < min && d > 1e-9) {
-      const push = (min - d) / 2, ux = dx / d, uy = dy / d;
+    if (d < min) {
+      const push = (min - d) / 2, ux = d > 1e-9 ? dx / d : 1, uy = d > 1e-9 ? dy / d : 0;
       A.x -= ux * push; A.y -= uy * push; B.x += ux * push; B.y += uy * push;
       resolve(state, A); resolve(state, B);
     }
@@ -481,6 +541,7 @@ export function sceneFor(state, fid) {
 
   const r = hyp(f.x - CENTRE, f.y - CENTRE);
   return {
+    ...(state.weapons.modelAims ? { model_aims: true } : {}),
     hp: f.hp,
     weapon: f.weapon,
     ammo: f.weapon === 'pistol' ? 'unlimited' : f.ammo,
@@ -510,12 +571,26 @@ export function hashState(state) {
   return h.toString(16).padStart(8, '0');
 }
 
+// Translate legacy action names once at the log boundary, including probability bars.
+// Leave the source log intact so recorded results and hashes are preserved.
+export function normaliseLog(log) {
+  const aliases = { strafe_left: 'spin_left', strafe_right: 'spin_right' };
+  return { ...log, decisions: log.decisions.map((d) => ({
+    ...d,
+    a: aliases[d.a] ?? d.a,
+    probs: d.probs == null ? d.probs : Object.fromEntries(Object.entries(d.probs)
+      .filter(([a]) => !Object.hasOwn(aliases, a) || !Object.hasOwn(d.probs, aliases[a]))
+      .map(([a, p]) => [aliases[a] ?? a, p])),
+  })) };
+}
+
 // Applies log decisions in order, keyed by the tick they were applied on.
 export class ReplayCursor {
   constructor(log) {
+    log = normaliseLog(log);
     this.log = log;
     // the log's own weapon config, never the one in the dialog; none = a legacy all-on log
-    this.state = createMatch({ seed: log.seed, roster: log.roster.map((r) => r.id), weapons: log.weapons });
+    this.state = createMatch({ seed: log.seed, roster: log.roster.map((r) => r.id), weapons: log.modelAims === true ? { ...(log.weapons || LEGACY_WEAPON_CONFIG), modelAims: true } : log.weapons ? { ...log.weapons, modelAims: false } : undefined });
     this.decisions = [...log.decisions].map((d, i) => ({ d, i })).sort((a, b) => a.d.t - b.d.t || a.i - b.i).map((x) => x.d);
     this.next = 0;
   }
