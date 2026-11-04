@@ -9,3 +9,11 @@ scratch/
 *.log
 *.tmp
 .DS_Store
+# leaderboard and its backups live under data/ (ignored above); never commit keys
+.vercel/
+.npmrc
+*.pem
+*.key
+*.p12
+*secret*
+*credentials*
