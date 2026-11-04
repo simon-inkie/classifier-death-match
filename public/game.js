@@ -6,6 +6,7 @@ import { spaceAction } from './controls.js';
 import { botDecide, mockDecide, mockLatency, rosterEntry } from './brain.js';
 import { spriteCanvases, spriteElement, spriteDataUrl } from './sprites.js';
 import * as audio from './audio.js';
+import { SKIP_KEY, showSetupOnLoad, initialMode, liveAvailability, settleMode } from './setup.js';
 import { WEAPON_NAMES, WEAPON_PARAMS, WEAPONS as WEAPON_DEFAULTS, DEFAULT_WEAPON_CONFIG, paramBounds, normaliseWeapons,
   configId, configSummary, enabledWeapons, PICKUP_PARAMS, DEFAULT_PICKUPS } from './weapons.js';
 import { buildRecord, aggregate, filterRecords, sortStandings, mostKillsIds, celebrationText } from './leaderboard.js';
@@ -21,7 +22,10 @@ const world = $('world').getContext('2d');
 const ov = $('overlay').getContext('2d');
 
 const params = new URLSearchParams(location.search);
-let mode = params.get('mode') || 'mock';
+// Live by default; if Live turns out to be unavailable (no key, budget spent, server down), a defaulted
+// Live falls back to Mock once the status is known (see refreshStatus).
+const firstMode = initialMode(params);
+let mode = firstMode.mode;
 // Default four: Jev, Luna, Laya, ScaleDown. Gemini (the fifth) and the scripted bot are tick-boxes,
 // off by default (or ?gemini=1, ?bot=1).
 let enabled = new Set(DEFAULT_ROSTER);
@@ -68,15 +72,15 @@ function toast(msg, ms = 3500) {
 }
 const fmtMs = (v) => (v == null ? '-' : `${Math.round(v)}ms`);
 
-// ---------- character style: 'classic' (discs) or 'logos' (pixel sprites). Remembered per browser.
+// ---------- character style: 'classic' (discs) or 'logos' (pixel sprites). Default to 'logos'.
 const STYLES = ['classic', 'logos'];
 let charStyle = STYLES.includes(params.get('style')) ? params.get('style')
-  : STYLES.includes(safeStore.get('arenaStyle', 'classic')) ? safeStore.get('arenaStyle', 'classic') : 'classic';
+  : STYLES.includes(safeStore.get('arenaStyle', 'logos')) ? safeStore.get('arenaStyle', 'logos') : 'logos';
 function setStyle(st) {
   charStyle = st;
   safeStore.set('arenaStyle', st);
   document.body.classList.toggle('style-logos', st === 'logos');
-  for (const b of document.querySelectorAll('#styleGrp button')) b.classList.toggle('on', b.dataset.style === st);
+  for (const b of document.querySelectorAll('#styleGrp button, #setupStyles button')) b.classList.toggle('on', b.dataset.style === st);
 }
 const hitFlash = {}; // fighter id -> tick of last hit, for the white flash
 
@@ -107,9 +111,10 @@ function buildHeader() {
   $('modelAims').checked = Boolean(weaponCfg.modelAims);
   $('modelAims').onchange = (e) => {
     safeStore.set('arenaModelAims', e.target.checked);
+    if ($('setupModelAims')) $('setupModelAims').checked = e.target.checked;
     setWeaponCfg({ ...weaponCfg, modelAims: e.target.checked });
   };
-  for (const b of document.querySelectorAll('#modes button')) b.onclick = () => setMode(b.dataset.mode);
+  for (const b of document.querySelectorAll('#modes button, #setupModes button')) b.onclick = () => setMode(b.dataset.mode);
   const rg = $('rosterGrp'); rg.innerHTML = '';
   for (const r of ROSTER) {
     const isBot = r.kind === 'bot';
@@ -119,13 +124,16 @@ function buildHeader() {
     l.querySelector('input').onchange = (e) => {
       if (e.target.checked && enabled.size >= MAX_FIGHTERS) { e.target.checked = false; toast(`At most ${MAX_FIGHTERS} fighters`); return; }
       e.target.checked ? enabled.add(r.id) : enabled.delete(r.id);
+      syncSetupRoster();
       if (!running) preview();
     };
     rg.appendChild(l);
   }
-  for (const b of document.querySelectorAll('#styleGrp button')) b.onclick = () => setStyle(b.dataset.style);
+  for (const b of document.querySelectorAll('#styleGrp button, #setupStyles button')) b.onclick = () => setStyle(b.dataset.style);
   setStyle(charStyle);
   buildSoundControls();
+  buildSetupModal();
+  $('setupBtn').onclick = openSetup;
   $('start').onclick = onSpace;
   $('restart').onclick = restart;
   $('warm').onclick = warmUp;
@@ -151,10 +159,16 @@ function buildHeader() {
   $('lbReset').onclick = resetLeaderboard;
   $('noticeClose').onclick = () => notice(null);
   $('splashGo').onclick = () => $('splash').classList.remove('show');
+  $('splashStart').onclick = () => { $('splash').classList.remove('show'); if (!running) start(); };
+  $('setupSkip').checked = Boolean(safeStore.get(SKIP_KEY, false));
+  $('setupSkip').onchange = (e) => safeStore.set(SKIP_KEY, e.target.checked);
   setWeaponCfg(weaponCfg);
   document.addEventListener('keydown', (e) => {
-    if (anyModal()) { // a dialog is open: no game keys, Escape closes it
+    if (anyModal()) { // a dialog is open: Escape closes it; Space on the setup modal starts the match
       if (e.key === 'Escape') anyModal().classList.remove('show');
+      if (e.code === 'Space' && $('splash').classList.contains('show') && !['INPUT', 'BUTTON', 'SELECT'].includes(e.target.tagName)) {
+        e.preventDefault(); $('splash').classList.remove('show'); if (!running) start();
+      }
       return;
     }
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
@@ -176,6 +190,89 @@ function buildHeader() {
   // a click anywhere skips the celebration (buttons run their own handler first: Start skips, Restart restarts)
   document.addEventListener('click', () => { if (celebrate) skipCelebration(); });
   setMode(mode);
+  if (showSetupOnLoad(params, safeStore)) openSetup();
+}
+
+function kindLabel(r) {
+  if (r.kind === 'chat') return 'Chat LLM (JSON)';
+  if (r.kind === 'bot') return 'If/Else Bot';
+  return 'Decision Classifier';
+}
+
+function buildSetupModal() {
+  const wrap = $('setupRoster');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  for (const r of ROSTER) {
+    const row = document.createElement('label');
+    row.className = `setup-row ${enabled.has(r.id) ? '' : 'off'}`;
+    row.style.setProperty('--c', r.colour);
+    row.dataset.id = r.id;
+    row.innerHTML = `
+      <input type="checkbox" data-id="${r.id}" ${enabled.has(r.id) ? 'checked' : ''}>
+      <span class="setup-spr"></span>
+      <span class="setup-info">
+        <span class="setup-top">
+          <span class="setup-name">${esc(r.name)}</span>
+          <span class="setup-kind">${esc(kindLabel(r))}</span>
+        </span>
+        <span class="setup-model">${esc(shownModel(r.id))}</span>
+      </span>`;
+    row.querySelector('.setup-spr').appendChild(spriteElement(r.id, 34, r.colour));
+    row.querySelector('input').onchange = (e) => {
+      if (e.target.checked && enabled.size >= MAX_FIGHTERS) {
+        e.target.checked = false;
+        toast(`At most ${MAX_FIGHTERS} fighters`);
+        return;
+      }
+      e.target.checked ? enabled.add(r.id) : enabled.delete(r.id);
+      const hdrChk = $(r.kind === 'bot' ? 'botToggle' : `chk-${r.id}`);
+      if (hdrChk) hdrChk.checked = e.target.checked;
+      syncSetupRoster();
+      if (!running) preview();
+    };
+    wrap.appendChild(row);
+  }
+  const aimChk = $('setupModelAims');
+  if (aimChk) {
+    aimChk.checked = Boolean(weaponCfg.modelAims);
+    aimChk.onchange = (e) => {
+      $('modelAims').checked = e.target.checked;
+      safeStore.set('arenaModelAims', e.target.checked);
+      setWeaponCfg({ ...weaponCfg, modelAims: e.target.checked });
+    };
+  }
+}
+
+function syncSetupRoster() {
+  for (const row of document.querySelectorAll('#setupRoster .setup-row')) {
+    const id = row.dataset.id;
+    const on = enabled.has(id);
+    row.classList.toggle('off', !on);
+    const chk = row.querySelector('input');
+    if (chk) chk.checked = on;
+    const m = row.querySelector('.setup-model');
+    if (m && rosterById[id]) m.textContent = shownModel(id);
+  }
+  for (const sel of document.querySelectorAll('select.mpick')) sel.value = pickedModels[sel.dataset.id] || '';
+  if ($('setupModelAims')) $('setupModelAims').checked = Boolean(weaponCfg.modelAims);
+  updateSetupLive();
+}
+
+// The modal's Live button and its note follow the server's status (no key, budget spent, server down).
+function updateSetupLive() {
+  const live = document.querySelector('#setupModes button[data-mode="live"]');
+  if (!live || !statusKnown) return;
+  const a = liveAvailability(serverStatus);
+  live.disabled = !a.ok;
+  live.title = a.note;
+  $('setupLiveNote').textContent = a.note;
+  $('setupLiveNote').style.display = a.note ? '' : 'none';
+}
+
+function openSetup() {
+  syncSetupRoster();
+  $('splash').classList.add('show');
 }
 
 // ---------- sound controls (presentation only; see audio.js)
@@ -202,7 +299,7 @@ function buildSoundControls() {
 function setMode(m) {
   if (running) stop();
   mode = m;
-  for (const b of document.querySelectorAll('#modes button')) b.classList.toggle('on', b.dataset.mode === m);
+  for (const b of document.querySelectorAll('#modes button, #setupModes button')) b.classList.toggle('on', b.dataset.mode === m);
   $('replayGrp').style.display = m === 'replay' ? 'flex' : 'none';
   $('liveGrp').style.display = m === 'replay' ? 'none' : 'flex';
   $('rosterGrp').style.display = m === 'replay' ? 'none' : 'flex';
@@ -212,20 +309,33 @@ function setMode(m) {
   if (m === 'replay') refreshLogList(); else preview();
 }
 
+let statusKnown = false;
 async function refreshStatus() {
   try {
     serverStatus = await (await fetch('/api/status')).json();
+    statusKnown = true;
+    settleFirstMode();
     const k = $('keyChip');
     k.textContent = serverStatus.keyLoaded ? 'KEY LOADED' : 'NO KEY';
     k.className = `chip ${serverStatus.keyLoaded ? 'ok' : 'bad'}`;
     updateBudget(serverStatus.budget);
     applyHostedUi();
     if (serverStatus.modelPicker) buildModelPickers(); else clearModelPickers();
-  } catch { $('keyChip').textContent = 'PROXY DOWN'; $('keyChip').className = 'chip bad'; }
+  } catch {
+    $('keyChip').textContent = 'PROXY DOWN'; $('keyChip').className = 'chip bad';
+    serverStatus = null; statusKnown = true; settleFirstMode();
+  }
+  updateSetupLive();
+}
+// once, on the first status: a defaulted Live that cannot run becomes Mock
+function settleFirstMode() {
+  if (settleFirstMode.done) return;
+  settleFirstMode.done = true;
+  const m = settleMode(firstMode, serverStatus);
+  if (m !== mode && !running) setMode(m);
 }
 
-// ---------- hosted site: splash, live-budget notice; nothing here runs differently on the local proxy
-// except the splash, which only shows on the hosted site (or with &splash=1).
+// ---------- hosted site: live-budget notice and status chips; nothing here runs on the local proxy
 function notice(msg) {
   const n = $('notice');
   if (!msg) { n.classList.remove('show'); return; }
@@ -241,12 +351,6 @@ function applyHostedUi() {
     $('keyChip').className = `chip ${serverStatus.spend?.exhausted || !serverStatus.keyLoaded ? 'bad' : 'ok'}`;
   }
   if (serverStatus?.spendMessage && mode === 'live') notice(serverStatus.spendMessage);
-  // the intro shows once per browser (and again with &splash=1)
-  if (!applyHostedUi.splashed && ((hosted && !safeStore.get('arenaSplashSeen', false)) || params.get('splash') === '1')) {
-    applyHostedUi.splashed = true;
-    $('splash').classList.add('show');
-    safeStore.set('arenaSplashSeen', true);
-  }
 }
 
 // ---------- model picker (only when the server has ENABLE_MODEL_PICKER on)
@@ -258,25 +362,31 @@ async function buildModelPickers() {
     modelList = Array.isArray(j.models) ? j.models : [];
   } catch { return; }
   clearModelPickers();
-  for (const r of ROSTER) {
-    if (r.kind === 'bot') continue;
-    const box = $(`chk-${r.id}`)?.closest('label');
-    if (!box) continue;
+  // one select in the header and one in the setup modal per slot, kept in step through syncSetupRoster
+  const pickerFor = (r, cls) => {
     const sel = document.createElement('select');
-    sel.className = 'mpick'; sel.title = `Model for the ${r.name} slot`; sel.setAttribute('aria-label', sel.title);
+    sel.className = cls; sel.dataset.id = r.id; sel.title = `Model for the ${r.name} slot`; sel.setAttribute('aria-label', sel.title);
     const opts = [`<option value="">${esc(r.model)}</option>`];
     for (const m of modelList) if (m.id !== r.model) opts.push(`<option value="${esc(m.id)}">${esc(m.id)}</option>`);
     sel.innerHTML = opts.join('');
-    if (pickedModels[r.id] && modelList.some((m) => m.id === pickedModels[r.id])) sel.value = pickedModels[r.id];
-    else delete pickedModels[r.id];
+    sel.value = pickedModels[r.id] || '';
+    sel.onclick = (e) => e.stopPropagation(); // inside the modal row's label: do not toggle the fighter
     sel.onchange = () => {
       if (sel.value) pickedModels[r.id] = sel.value; else delete pickedModels[r.id];
       safeStore.set('arenaPicked', pickedModels);
       sel.blur();
+      syncSetupRoster();
       if (!running) preview();
     };
-    box.after(sel);
+    return sel;
+  };
+  for (const r of ROSTER) {
+    if (r.kind === 'bot') continue;
+    if (pickedModels[r.id] && !modelList.some((m) => m.id === pickedModels[r.id])) delete pickedModels[r.id];
+    $(`chk-${r.id}`)?.closest('label')?.after(pickerFor(r, 'mpick'));
+    document.querySelector(`#setupRoster .setup-row[data-id="${r.id}"] .setup-info`)?.appendChild(pickerFor(r, 'mpick setup-mpick'));
   }
+  syncSetupRoster();
   if (!running && mode !== 'replay') preview();
 }
 function updateBudget(b) {
