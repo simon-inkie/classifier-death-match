@@ -1,7 +1,7 @@
 // Hosted API (lib/hosted.js) and the model picker flag. Core money and danger only: the daily spend
 // ceiling (atomic, held reservations, under concurrency), the worst-case call bound (scene schema, body
 // and prompt caps, timeouts), token-bound server-built leaderboard records and markup stripping, the
-// per-network (/64) and site-wide start limits, throttles before any store read, the storage fallback
+// per-network start limits (IPv6 by /48) and the site-wide open-match cap, throttles before any store read, the storage fallback
 // (fail closed without a durable store), and the picker flag enforced on the server in both the hosted
 // API and the local proxy. No real gateway or KV calls: a fake fetch stands in for both, and the proxy
 // test points server.js at a local fake gateway.
@@ -13,7 +13,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createHosted, clientNetwork, PLAY_S, IDLE_S } from '../lib/hosted.js';
+import { createHosted, clientNetwork, PLAY_S, IDLE_S, MIN_LIFE_S } from '../lib/hosted.js';
 import { createStore, MemoryStore, RestStore, FileStore } from '../lib/storage.js';
 import { spendConfig, worstCallUsd, matchReserveUsd, trancheUsd, callBound, PROMPT_CHAR_CAP, PICKER_SAFETY } from '../lib/spend.js';
 import { cleanScene, promptChars } from '../lib/scene.js';
@@ -30,6 +30,12 @@ const scene = sceneIn(['jev', 'laya'], 'jev');
 const DAY = '2026-11-04';
 
 function durableMemory(now) { const s = new MemoryStore({ now }); s.durable = true; return s; }
+// A durable memory store that runs hook(key, by) before each incrFloat, to land a close inside a window.
+class HookStore extends MemoryStore {
+  durable = true;
+  hook = null;
+  async incrFloat(key, by, ttl) { if (this.hook) await this.hook(key, by); return super.incrFloat(key, by, ttl); }
+}
 
 // A fake gateway as a fetch function. cost: what each call reports (null = no cost and no usage),
 // 'worst' = exactly the fighter's worst case. The action is the bot's choice for the request's own state.
@@ -40,6 +46,7 @@ function fakeGateway({ cost = 0.00001, fail = null, delayMs = 0 } = {}) {
     calls.push({ url, body, auth: opts.headers?.Authorization });
     if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
     if (fail === 'timeout') { const e = new Error('aborted'); e.name = 'AbortError'; throw e; }
+    if (fail === 503) return { ok: false, status: 503, text: async () => 'unavailable' };
     if (fail === 'garbage') return { ok: true, status: 200, text: async () => JSON.stringify({ answers: {}, provider_metadata: { gateway: { cost: 0.0001 } } }) };
     const action = 'hold';
     const c = cost === 'worst' ? worstCallUsd(Object.values(rosterById).find((r) => r.model === body.model)) : cost;
@@ -72,7 +79,7 @@ const decide = (api, matchToken, fighter = 'jev', extra = {}) => call(api, 'deci
 const committed = async (store) => Number(await store.get(`spend:usd:${DAY}`)) || 0;
 
 test('ceiling: concurrent starts reserve atomically, never past the ceiling; ending a match frees its budget', async () => {
-  const { api, store } = setup({ env: { DAILY_SPEND_CEILING_GBP: '1', USD_PER_GBP: '1.30', GLOBAL_MATCH_RATE_LIMIT: '100', MAX_MATCH_SHARE: '1' } }); // $1.30
+  const { api, store } = setup({ env: { DAILY_SPEND_CEILING_GBP: '1', USD_PER_GBP: '1.30', MAX_OPEN_MATCHES: '100', MAX_MATCH_SHARE: '1' } }); // $1.30
   assert.equal(spendConfig({ DAILY_SPEND_CEILING_GBP: '1', USD_PER_GBP: '1.30' }).usd, 1.3);
   const four = ['jev', 'luna', 'laya', 'scaledown'];
   const tranche = trancheUsd(matchReserveUsd(four.map((id) => rosterById[id])));
@@ -113,12 +120,12 @@ test('ceiling: concurrent calls at the worst-case cost never take the day past t
   assert.ok(okCalls >= 1190 && okCalls <= 1200, `calls ${okCalls}: 600 worst-case calls per fighter, pooled`);
 });
 
-test('ceiling: cost above the bound is charged to the match and the day at once, and the day stops at the ceiling', async () => {
+test('ceiling: cost above the bound is charged to the match at once, the day never runs below what was billed, and calls stop', async () => {
   const over = (url, o) => { const body = JSON.parse(o.body); const f = Object.values(rosterById).find((r) => r.model === body.model); return 2 * worstCallUsd(f); };
   let billed = 0;
   const gw = fakeGateway();
   const fetcher = async (url, o) => { const c = over(url, o); billed += c; const r = await fakeGateway({ cost: c }).fetcher(url, o); gw.calls.push(1); return r; };
-  const { api, store, clock } = setup({ env: { DAILY_SPEND_CEILING_GBP: '0.5', USD_PER_GBP: '1.30', MAX_MATCH_SHARE: '1', GLOBAL_MATCH_RATE_LIMIT: '100' }, gateway: { ...gw, fetcher } }); // $0.65
+  const { api, store, clock } = setup({ env: { DAILY_SPEND_CEILING_GBP: '0.5', USD_PER_GBP: '1.30', MAX_MATCH_SHARE: '1', MAX_OPEN_MATCHES: '100' }, gateway: { ...gw, fetcher } }); // $0.65
   const roster = ['jev', 'luna'];
   const sc = { jev: sceneIn(roster, 'jev'), luna: sceneIn(roster, 'luna') };
   const toks = [];
@@ -126,11 +133,11 @@ test('ceiling: cost above the bound is charged to the match and the day at once,
   let refusedForDay = false;
   for (let wave = 0; wave < 3000; wave++) {
     const rs = await Promise.all(toks.flatMap((t) => roster.map((f) => call(api, 'decide', { body: { matchToken: t, fighter: f, scene: sc[f] }, ip: freshIp() }))));
-    if (rs.some((r) => r.body.ceilingReached)) refusedForDay = true;
+    if (rs.some((r) => r.body.ceilingReached || r.body.busy)) refusedForDay = true;
     if (!rs.some((r) => r.status === 200)) break;
     clock.t += 100;
   }
-  assert.ok(refusedForDay, 'calls refused once the day total passes the ceiling');
+  assert.ok(refusedForDay, 'calls refused once the day is committed');
   const maxOne = 2 * worstCallUsd(rosterById.luna);
   assert.equal(toks.length, 3);
   assert.ok(billed <= 0.65 + toks.length * 2 * maxOne, `billed ${billed} against $0.65`);
@@ -243,7 +250,7 @@ test('leaderboard: latency, cost, errors and timeouts come from the server, not 
   const { api, clock } = setup();
   const { token, decisions } = await playMatch(api, clock, ['jev', 'laya'], { ip: '192.0.2.77' });
   const forged = decisions.map((d) => ({ ...d, ms: d.f === 'laya' ? 99999 : 1, cost: d.f === 'laya' ? 1 : 0 }));
-  const stunFlood = [...forged, ...Array.from({ length: 50 }, (_, i) => ({ t: 10 + i, f: 'laya', a: null, err: 'timeout' }))];
+  const stunFlood = [...forged, ...Array.from({ length: 50 }, (_, i) => ({ t: 10 + i, f: 'laya', a: null, err: 'timeout' }))].sort((a, b) => a.t - b.t);
   const rec = (body) => call(api, 'record', { body, headers: { 'x-match-token': token }, ip: '192.0.2.77' });
   const flooded = await rec({ decisions: stunFlood });
   assert.equal(flooded.status, 400); assert.match(flooded.body.error, /stuns/);
@@ -281,29 +288,41 @@ test('leaderboard: free text is stripped of markup; reset needs the admin token'
   assert.equal((await call(admin, 'reset', { body: { confirm: 'RESET' }, headers: { authorization: 'Bearer a-long-admin-token-123' } })).status, 200);
 });
 
-test('rate limits: one IPv6 /64 is one network; only successful starts count site-wide', async () => {
+test('rate limits: starts count per network (IPv6 by /48) even when ended at once; open matches are capped atomically', async () => {
   assert.equal(clientNetwork({ headers: { 'x-real-ip': '2001:db8:0:1::abcd' } }), clientNetwork({ headers: { 'x-real-ip': '2001:0db8:0000:0001:ffff:1:2:3' } }));
   assert.notEqual(clientNetwork({ headers: { 'x-real-ip': '2001:db8:0:1::1' } }), clientNetwork({ headers: { 'x-real-ip': '2001:db8:0:2::1' } }));
+  assert.equal(clientNetwork({ headers: { 'x-real-ip': '2001:db8:0:1::1' } }, 48), clientNetwork({ headers: { 'x-real-ip': '2001:db8:0:ff::1' } }, 48));
   assert.equal(clientNetwork({ headers: { 'x-real-ip': '::ffff:192.0.2.1' } }), '192.0.2.1');
-  const { api } = setup({ env: { MATCH_RATE_LIMIT: '5' } });
+  const { api, clock } = setup({ env: { MATCH_RATE_LIMIT: '5' } });
   let ok = 0;
   for (let i = 0; i < 20; i++) {
-    const r = await start(api, ['jev', 'laya'], { ip: `2001:db8::${i.toString(16)}` });
+    clock.t += (MIN_LIFE_S + 1) * 1000;
+    const r = await start(api, ['jev', 'laya'], { ip: `2001:db8:0:${i.toString(16)}::1` });
     if (r.status === 200) { ok++; await call(api, 'matchEnd', { body: { matchToken: r.body.matchToken } }); }
   }
-  assert.equal(ok, 5, 'five per /64, however many addresses it rotates through');
-  assert.equal((await start(api, ['jev', 'laya'], { ip: '2001:db8:0:1::1' })).status, 200, 'another /64');
-  const g = setup({ env: { GLOBAL_MATCH_RATE_LIMIT: '3' } }).api;
+  assert.equal(ok, 5, 'five per /48, however many /64s it rotates through, each ended at once');
+  assert.equal((await start(api, ['jev', 'laya'], { ip: '2001:db8:1::1' })).status, 200, 'another /48');
+
+  const g = setup({ env: { MAX_OPEN_MATCHES: '3' } });
   const noisy = [];
-  for (let i = 0; i < 10; i++) noisy.push((await start(g, ['jev', 'laya'], { ip: '192.0.2.50' })).status);
+  for (let i = 0; i < 10; i++) noisy.push((await start(g.api, ['jev', 'laya'], { ip: '192.0.2.50' })).status);
   assert.equal(noisy.filter((c) => c === 200).length, 1, 'one open match for the noisy network');
-  const codes = [];
-  for (let i = 0; i < 4; i++) codes.push((await start(g)).status);
-  assert.deepEqual(codes, [200, 200, 429, 429], 'refused starts did not use up the site-wide limit');
+  const toks = [], codes = [];
+  for (let i = 0; i < 4; i++) { const r = await start(g.api); codes.push(r.status); if (r.status === 200) toks.push(r.body.matchToken); }
+  assert.deepEqual(codes, [200, 200, 429, 429], 'refused starts hold no slot');
+  for (const t of toks) await call(g.api, 'matchEnd', { body: { matchToken: t } });
+  assert.equal((await start(g.api)).status, 429, 'a match ended at once keeps its slot for the minimum lifetime');
+  g.clock.t += (MIN_LIFE_S + 1) * 1000;
+  assert.equal((await start(g.api)).status, 200, 'and frees it after');
+
+  const b = setup({ env: { MAX_OPEN_MATCHES: '5' } });
+  const burst = await Promise.all(Array.from({ length: 40 }, () => start(b.api)));
+  assert.equal(burst.filter((r) => r.status === 200).length, 5, 'a concurrent burst cannot pass the cap');
+  assert.equal((await b.store.listRange('open-matches')).length, 5);
 });
 
 test('lock-out: one open match per network, a cap on any one match, and idle matches release at once', async () => {
-  const { api, store, clock } = setup({ env: { GLOBAL_MATCH_RATE_LIMIT: '100' } });
+  const { api, store, clock } = setup({ env: { MAX_OPEN_MATCHES: '100' } });
   const five = ['jev', 'luna', 'laya', 'scaledown', 'gemini'];
   const first = await start(api, five, { ip: '192.0.2.9' });
   assert.equal(first.status, 200);
@@ -497,4 +516,100 @@ test('local proxy, picker ON: a listed model plays through chat; an unpriced one
     assert.equal((await post('/api/decide', { fighter: 'jev', scene, model: 'acme/no-price' })).status, 400);
     assert.equal(seen.length, 1);
   });
+});
+
+test('top-up hand-back: a close inside the hand-back window never refunds the same tranche twice', async () => {
+  const clock = { t: Date.UTC(2026, 10, 4, 12) };
+  const store = new HookStore({ now: () => clock.t });
+  const gw = fakeGateway({ cost: 'worst' });
+  let billed = 0;
+  const fetcher = async (url, o) => { billed += worstCallUsd(Object.values(rosterById).find((r) => r.model === JSON.parse(o.body).model)); return gw.fetcher(url, o); };
+  const { api } = setup({ store, clock, gateway: { ...gw, fetcher } });
+  const roster = ['jev', 'laya'], ip = '192.0.2.5';
+  const tok = (await start(api, roster, { ip })).body.matchToken, id = tok.split('.')[0];
+  const T = trancheUsd(matchReserveUsd(roster.map((f) => rosterById[f])));
+  for (let i = 0; i < 500; i++) for (const f of roster) { clock.t += 50; assert.equal((await call(api, 'decide', { body: { matchToken: tok, fighter: f, scene: sceneIn(roster, f) }, ip })).status, 200); }
+  let fired = false;
+  store.hook = async (key, by) => {
+    if (fired || !(key === `match:${id}:reserve` && by < 0)) return;
+    fired = true; store.hook = null;
+    await call(api, 'matchEnd', { body: { matchToken: tok }, ip });
+  };
+  clock.t += 100;
+  await Promise.all(roster.map((f) => call(api, 'decide', { body: { matchToken: tok, fighter: f, scene: sceneIn(roster, f) }, ip })));
+  assert.ok(fired, 'both fighters topped up at once and the close landed between the second top-up and its hand-back');
+  const day = await committed(store), used = Number(await store.get(`used:usd:${DAY}`)) || 0;
+  assert.ok(day >= billed - 1e-9, `day ${day} never below billed ${billed}`);
+  assert.ok(day >= used - 1e-9, 'committed spend never below the spend of closed matches');
+  assert.ok(day - billed <= T + 1e-9, 'at most one tranche held, in the safe direction');
+});
+
+test('top-up during close: the call is refused and nothing is refunded twice', async () => {
+  const clock = { t: Date.UTC(2026, 10, 4, 12) };
+  const store = new HookStore({ now: () => clock.t });
+  const { api, gateway } = setup({ store, clock, gateway: fakeGateway({ cost: 'worst' }) });
+  const roster = ['jev', 'laya'], ip = '192.0.2.6';
+  const tok = (await start(api, roster, { ip })).body.matchToken, id = tok.split('.')[0];
+  const T = trancheUsd(matchReserveUsd(roster.map((f) => rosterById[f])));
+  for (let i = 0; i < 100; i++) for (const f of roster) { clock.t += 50; assert.equal((await call(api, 'decide', { body: { matchToken: tok, fighter: f, scene: sceneIn(roster, f) }, ip })).status, 200); }
+  const billed = Number(await store.get(`match:${id}:spent`));
+  store.hook = async (key, by) => {
+    if (!(key === `match:${id}:reserve` && by > 0)) return;
+    store.hook = null;
+    await call(api, 'matchEnd', { body: { matchToken: tok }, ip });
+  };
+  clock.t += 100;
+  const r = await call(api, 'decide', { body: { matchToken: tok, fighter: 'jev', scene: sceneIn(roster, 'jev') }, ip });
+  assert.equal(r.status, 403); assert.equal(gateway.calls.length, 200, 'no paid call after the close');
+  const day = await committed(store);
+  // the close read spent with this call's bound in it, so the day may also keep that one bound
+  assert.ok(day >= billed - 1e-9 && day - billed <= T + worstCallUsd(rosterById.jev) + 1e-9, `day ${day}: what was billed, plus at most one tranche and one bound (safe direction)`);
+});
+
+test('idle sweep: a match whose calls cost 0 or fail is still live; one with no attempts is closed', async () => {
+  for (const gateway of [fakeGateway({ cost: 0 }), fakeGateway({ fail: 503 })]) {
+    const { api, clock } = setup({ gateway });
+    const roster = ['jev', 'laya'], ip = '192.0.2.8';
+    const tok = (await start(api, roster, { ip })).body.matchToken;
+    for (let s = 0; s < IDLE_S + 10; s++) {
+      clock.t += 1000;
+      await start(api); // another player's start runs the sweep
+      const r = await call(api, 'decide', { body: { matchToken: tok, fighter: 'jev', scene: sceneIn(roster, 'jev') }, ip });
+      assert.notEqual(r.status, 403, `still live after ${s + 1} s of attempts`);
+    }
+    clock.t += (IDLE_S + 1) * 1000;
+    await start(api);
+    assert.equal((await call(api, 'decide', { body: { matchToken: tok, fighter: 'jev', scene: sceneIn(roster, 'jev') }, ip })).status, 403, 'closed once attempts stop');
+  }
+});
+
+test('excess: the only match on the day is not cut short as busy when calls cost more than their bound', async () => {
+  const roster = ['jev', 'luna'], F = matchReserveUsd(roster.map((f) => rosterById[f]));
+  let billed = 0;
+  const gw = fakeGateway();
+  const fetcher = async (url, o) => { const c = 2 * worstCallUsd(Object.values(rosterById).find((r) => r.model === JSON.parse(o.body).model)); billed += c; return fakeGateway({ cost: c }).fetcher(url, o); };
+  const { api, store, clock } = setup({ env: { DAILY_SPEND_CEILING_GBP: String((F * 1.05) / 1.3), USD_PER_GBP: '1.30', MAX_MATCH_SHARE: '1' }, gateway: { ...gw, fetcher } });
+  const tok = (await start(api, roster)).body.matchToken;
+  let last;
+  for (let i = 0; i < 2000; i++) {
+    const rs = await Promise.all(roster.map((f) => call(api, 'decide', { body: { matchToken: tok, fighter: f, scene: sceneIn(roster, f) } })));
+    last = rs.find((r) => r.status !== 200);
+    if (last) break;
+    clock.t += 100;
+  }
+  assert.ok(last, 'calls stop');
+  assert.ok(!last.body.busy, `not told other matches hold the day: ${JSON.stringify(last.body)}`);
+  assert.ok(billed >= 0.95 * F, `played to its full budget: billed ${billed} of ${F}`);
+  assert.ok(await committed(store) >= billed - 1e-9, 'the day never runs below what was billed');
+  await call(api, 'matchEnd', { body: { matchToken: tok } });
+  assert.ok(Math.abs(await committed(store) - billed) < 1e-9, 'settles to exactly what was billed');
+});
+
+test('leaderboard: decisions listed out of tick order are refused', async () => {
+  const { api, clock } = setup();
+  const { token, decisions } = await playMatch(api, clock, ['jev', 'laya'], { ip: '192.0.2.78' });
+  const maxT = Math.max(...decisions.map((d) => d.t));
+  const reversed = decisions.map((d) => ({ ...d, t: maxT - d.t }));
+  const r = await call(api, 'record', { body: { decisions: reversed }, headers: { 'x-match-token': token }, ip: '192.0.2.78' });
+  assert.equal(r.status, 400); assert.match(r.body.error, /tick order/);
 });
