@@ -8,6 +8,8 @@ import { ROSTER, rosterById } from './public/shared.js';
 import { buildRequest, parseResponse } from './adapters.js';
 import { normaliseWeapons } from './public/weapons.js';
 import { cleanRecord, MAX_RECORDS } from './public/leaderboard.js';
+import { pickerEnabled, resolveFighter, createCatalogue, maxUsdPerCall } from './lib/models.js';
+import { conservativeCallUsd } from './lib/spend.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, 'public');
@@ -23,6 +25,14 @@ const COST_MAX = process.env.CALL_BUDGET_USD == null || process.env.CALL_BUDGET_
 if (COST_MAX !== null && (!Number.isFinite(COST_MAX) || COST_MAX < 0)) throw new Error('invalid CALL_BUDGET_USD');
 const TIMEOUT_MS = Number(process.env.CALL_TIMEOUT_MS || 2000);
 const LB_FILE = path.resolve(ROOT, process.env.LEADERBOARD_FILE || 'data/leaderboard.json');
+// Model picker (off unless ENABLE_MODEL_PICKER=1): with it off, a fighter only ever runs its roster model.
+const PICKER = pickerEnabled();
+const MAX_CALL_USD = maxUsdPerCall();
+const catalogue = createCatalogue();
+async function resolveSlot(fid, model) {
+  const models = PICKER && model ? (await catalogue()).models : undefined;
+  return resolveFighter(fid, model, { enabled: PICKER, models, maxCallUsd: MAX_CALL_USD });
+}
 
 fs.mkdirSync(LOGS, { recursive: true });
 
@@ -69,8 +79,8 @@ function readBody(req, limit = 20e6) {
   });
 }
 
-async function decide(fid, scene, weapons) {
-  const fighter = rosterById[fid];
+async function decide(fid, scene, weapons, picked) {
+  const fighter = picked || rosterById[fid];
   if (!fighter || fighter.kind === 'bot') return { status: 400, body: { error: 'unknown fighter' } };
   if (!KEY) return { status: 503, body: { error: 'AI_GATEWAY_API_KEY not set' } };
   if (COST_MAX !== null && usedUsd >= COST_MAX) return { status: 429,
@@ -95,7 +105,8 @@ async function decide(fid, scene, weapons) {
       return { status: 502, body: { error: `HTTP ${r.status}: ${msg}`, ms, budget: { used, max: BUDGET } } };
     }
     const parsed = parseResponse(fighter, JSON.parse(txt), scene);
-    usedUsd += Math.max(0, Number(parsed.cost) || 0);
+    // a picked model with no reported cost counts at a conservative estimate, never as free
+    usedUsd += picked && parsed.costSource === 'none' ? conservativeCallUsd(fighter) : Math.max(0, Number(parsed.cost) || 0);
     perFighter[fid].ok++;
     console.log(`[call ${used}/${BUDGET}] ${fid} ok ${ms}ms -> ${parsed.action}`);
     return { status: 200, body: { ...parsed, upstreamMs: ms, budget: { used, max: BUDGET }, costBudget: costBudget() } };
@@ -114,14 +125,37 @@ const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, `http://${HOST}`);
     if (u.pathname === '/api/status') {
-      return send(res, 200, { keyLoaded: Boolean(KEY), budget: { used, max: BUDGET }, costBudget: costBudget(), perFighter,
+      return send(res, 200, { keyLoaded: Boolean(KEY), modelPicker: PICKER, budget: { used, max: BUDGET }, costBudget: costBudget(), perFighter,
         roster: ROSTER.map(({ id, name, model, kind, transport }) => ({ id, name, model, kind, transport })) });
     }
     if (u.pathname === '/api/decide' && req.method === 'POST') {
-      const { fighter, scene, weapons } = JSON.parse(await readBody(req, 1e5));
+      const { fighter, scene, weapons, model } = JSON.parse(await readBody(req, 1e5));
+      let picked;
+      if (model != null) { // checked on the server: the page hiding the picker is not the control
+        const r = await resolveSlot(fighter, model);
+        if (!r.ok) return send(res, r.status, { error: r.error, stop: true });
+        if (r.picked) picked = r.fighter;
+      }
       // the match's weapon config sets the rules text; validated and clamped here, never trusted
-      const out = await decide(fighter, scene, weapons ? normaliseWeapons(weapons) : undefined);
+      const out = await decide(fighter, scene, weapons ? normaliseWeapons(weapons) : undefined, picked);
       return send(res, out.status, out.body);
+    }
+    if (u.pathname === '/api/models' && req.method === 'GET') {
+      if (!PICKER) return send(res, 200, { enabled: false, models: [] });
+      const { source, models } = await catalogue();
+      return send(res, 200, { enabled: true, source, models: models.filter((m) => m.price).map(({ id, name, price }) => ({ id, name, price })) });
+    }
+    if (u.pathname === '/api/match/start' && req.method === 'POST') {
+      // Local: no token, no rate limit (the page asks so it works the same here and on the hosted site).
+      // It only checks the fighters' models and that the spend budget is not already gone.
+      const { fighters, models } = JSON.parse((await readBody(req, 1e4)) || '{}');
+      for (const id of Array.isArray(fighters) ? fighters : []) {
+        if (!rosterById[id] || rosterById[id].kind === 'bot') continue;
+        const r = await resolveSlot(id, models?.[id]);
+        if (!r.ok) return send(res, r.status, { error: `${id}: ${r.error}` });
+      }
+      if (COST_MAX !== null && usedUsd >= COST_MAX) return send(res, 429, { error: `cost budget spent ($${usedUsd}/$${COST_MAX})`, stop: true });
+      return send(res, 200, { matchToken: null, local: true });
     }
     if (u.pathname === '/api/leaderboard' && req.method === 'GET') {
       return send(res, 200, board);
