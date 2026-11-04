@@ -19,7 +19,7 @@ npm start
 # open http://127.0.0.1:8787/?mode=mock and press Space
 ```
 
-The server listens on `127.0.0.1` only. Mock mode needs no network and costs nothing: each fighter is a noisy softmax over a simple heuristic with a fake latency profile. It is also the Wi-Fi fallback for a live demo. Replay mode works without a key too, and three example matches are bundled in `examples/`.
+The server listens on `127.0.0.1` by default; set `HOST` (for example `HOST=0.0.0.0`) only if you mean to expose it, since in live mode it spends from your gateway key. Mock mode needs no network and costs nothing: each fighter is a noisy softmax over a simple heuristic with a fake latency profile. It is also the Wi-Fi fallback for a live demo. Replay mode works without a key too, and three example matches are bundled in `examples/`.
 
 ## Live mode (real models)
 
@@ -214,6 +214,7 @@ These are bounded, and the gateway spend limit and the WAF rule above are what c
 - **Shared addresses.** People behind one IPv4 address (offices, carrier-grade NAT) or one IPv6 /48 share the per-network limits, so one of them can use up the others' starts.
 - **Store consistency.** The ordering checks assume one consistent store. Use a single-region Upstash database (no read replicas), or reads can lag writes.
 - **Tick choice.** The page chooses which tick each answer landed on, in order, and may drop a few answers. Running the simulation on the server would close it.
+- **Lock races raise spent briefly.** On a warm instance the per-fighter lock and the call's reservation go in one round trip, so a duplicate request that loses the lock adds its bound to the match's spent figure until its rollback lands (one round trip). Another fighter of that match can see it in that moment: near the end of a match's budget it may be told the budget is spent, a top-up may come early, and a close in that window keeps the bound on the day until midnight (the safe direction). The page never sends overlapping calls for one fighter, so only duplicated or retried requests hit it. A Redis script (`EVAL`) taking the lock and reserving together would remove it.
 - **Picker safety factor.** The three-times bound on a picked model's price also applies to the local server when the picker is on.
 
 ### Environment variables
