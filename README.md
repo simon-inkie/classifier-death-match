@@ -198,6 +198,11 @@ The code bounds spend from its price table and the costs the gateway reports. Th
 - **A Vercel Firewall rate-limit rule.** The throttles in the code are per serverless instance. Add a WAF rate-limit rule on `/api/*` (for example, a few hundred requests a minute per IP) so a flood is stopped at the edge, before any function runs or any store command is spent.
 - **A budget cap on the KV store.** The ceiling covers gateway spend only. Store commands (about ten per decision) are billed separately, so set a monthly budget or plan limit on the Upstash database. If the store runs out of quota, live play fails closed and Mock and Replay keep working.
 - **`ARENA_TOKEN_SECRET`.** Set it explicitly, so rotating the store token does not invalidate open matches.
+- **The same region for the functions and the store.** Every live decision waits on the store before and after its model call, so a store in another region adds its round trip time twice per move. `vercel.json` pins the functions to `lhr1` (London); create the Upstash database with its primary region in London too (AWS `eu-west-2`), or change `regions` in `vercel.json` to the Vercel region nearest the database. Keep it a single-region database with no read replicas (see Known limits).
+
+### Latency
+
+A warm `/api/decide` waits on one store round trip before the model call (it takes the per-fighter lock, reserves the call's bound and re-reads the match and day state in one ordered Upstash pipeline) and one after (the charge, the observation the leaderboard check uses, and the lock release). The first decide a serverless instance serves for a match reads the match record once more; a call that costs more than its bound and runs past its match's reserve adds one more trip, as does a tranche top-up every hundred calls. The idle timestamp is written after the response (Vercel's `waitUntil`, or awaited where that is not available). Each decide response carries a `Server-Timing` header (`kv`, `gateway`, `total`, in milliseconds), so the split shows in the browser's network panel.
 
 ### Known limits (residuals)
 
