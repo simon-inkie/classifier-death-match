@@ -690,3 +690,34 @@ test('store batching: multi is one ordered /pipeline POST on the REST store; wai
   await Promise.all(later);
   assert.equal(await store.get(`match:${id}:last`), clock.t, 'the idle timestamp lands after');
 });
+
+test('settlement: a failed bookkeeping command cannot stop the excess of a call that ran past a close reaching the day', async () => {
+  const clock = { t: Date.UTC(2026, 10, 4, 12) };
+  class FailBook extends MemoryStore {
+    durable = true;
+    async multi(ops) { const out = await super.multi(ops); if (ops.some(([m]) => m === 'listPush')) throw new Error('store: injected RPUSH error'); return out; }
+  }
+  const store = new FailBook({ now: () => clock.t });
+  let api, tok, billed = 0;
+  const fetcher = async (url, o) => {
+    const c = 5 * worstCallUsd(Object.values(rosterById).find((r) => r.model === JSON.parse(o.body).model)); billed += c;
+    await call(api, 'matchEnd', { body: { matchToken: tok } }); // the close lands while the call is out
+    return fakeGateway({ cost: c }).fetcher(url, o);
+  };
+  ({ api } = setup({ store, clock, gateway: { calls: [], fetcher } }));
+  tok = (await start(api)).body.matchToken;
+  const r = await call(api, 'decide', { body: { matchToken: tok, fighter: 'jev', scene }, ip: '203.0.113.7' }).catch((e) => ({ status: 500, e }));
+  assert.notEqual(r.status, 200, 'the store error still fails the request');
+  assert.ok(billed > 0);
+  assert.ok(await committed(store) >= billed - 1e-12, `day ${await committed(store)} never below billed ${billed}`);
+});
+
+test('warm decide: a match whose record is gone is refused even if its closed flag is gone too', async () => {
+  const { api, store, gateway } = setup();
+  const tok = (await start(api)).body.matchToken, id = tok.split('.')[0];
+  assert.equal((await call(api, 'decide', { body: { matchToken: tok, fighter: 'jev', scene } })).status, 200); // cached on this instance
+  await store.del(`match:${id}`); await store.del(`match:${id}:closed`); // evicted or flushed
+  const before = gateway.calls.length;
+  const r = await call(api, 'decide', { body: { matchToken: tok, fighter: 'laya', scene: sceneIn(['jev', 'laya'], 'laya') } });
+  assert.equal(r.status, 403); assert.equal(gateway.calls.length, before, 'no paid call');
+});
