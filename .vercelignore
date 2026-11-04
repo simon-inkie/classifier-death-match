@@ -1,0 +1,11 @@
+# never upload local state, notes or secrets with `vercel deploy`
+.env
+.env.*
+.notes/
+data/
+logs/
+scratch/
+screenshots/
+test/
+*.log
+*.tmp
