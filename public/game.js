@@ -612,6 +612,7 @@ async function startLive() {
     preview();
     if (roster.length < 2) return;
     const models = Object.fromEntries(roster.filter((id) => slotModel(id)).map((id) => [id, slotModel(id)]));
+    await endingMatch;
     const resp = await fetch('/api/match/start', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fighters: roster, models, seed: Number($('seed').value) | 0, weapons: weaponCfg }) });
     if (mode !== 'live' || running) return;
@@ -661,13 +662,17 @@ function launch() {
 }
 
 // Hand an unfinished hosted match back, so its unused budget is released straight away.
-function endLiveMatch(tok = matchToken) {
+// The site allows one open live match per network, so a new start waits for the old match's end.
+let endingMatch = Promise.resolve();
+function endLiveMatch(tok = matchToken, { beacon = false } = {}) {
   if (!tok) return;
   const body = JSON.stringify({ matchToken: tok });
   if (matchToken === tok) matchToken = null;
-  try { navigator.sendBeacon?.('/api/match/end', new Blob([body], { type: 'application/json' })) || fetch('/api/match/end', { method: 'POST', body, keepalive: true }); } catch {}
+  let sent = false;
+  if (beacon) try { sent = Boolean(navigator.sendBeacon?.('/api/match/end', new Blob([body], { type: 'text/plain' }))); } catch {}
+  if (!sent) endingMatch = fetch('/api/match/end', { method: 'POST', body, keepalive: true }).catch(() => {});
 }
-addEventListener('pagehide', () => { if (running && mode === 'live') endLiveMatch(); });
+addEventListener('pagehide', () => { if (running && mode === 'live') endLiveMatch(matchToken, { beacon: true }); });
 
 function stop() {
   if (mode === 'live' && running) endLiveMatch();
@@ -848,14 +853,15 @@ function finishMatch() {
   const recordable = (mode === 'live' || (mode === 'mock' && lbIncludeMock && !serverStatus?.hosted)) && !anyPicked;
   // The hosted site builds the record itself from the decisions (re-run and checked on the server).
   const recBody = serverStatus?.hosted && mode === 'live'
-    ? { decisions: log.decisions.map(({ t, f, a, ms, err, cost, costEst }) => ({ t, f, a, ms, err, cost, ...(costEst ? { costEst } : {}) })) } : rec;
+    ? { decisions: log.decisions.map(({ t, f, a, err }) => ({ t, f, a, err })) } : rec; // stats come from the server's own record
   if (mode === 'live' && serverStatus?.hosted && (!recordable || roster.includes('bot'))) endLiveMatch();
   if (recordable && !(serverStatus?.hosted && roster.includes('bot'))) {
     const tok = matchToken;
-    fetch('/api/leaderboard/record', { method: 'POST', body: JSON.stringify(recBody),
+    const saved = fetch('/api/leaderboard/record', { method: 'POST', body: JSON.stringify(recBody),
       headers: { 'Content-Type': 'application/json', ...(mode === 'live' && tok ? { 'X-Match-Token': tok } : {}) } })
       .then(async (r) => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`); if (matchToken === tok) matchToken = null; })
-      .catch((e) => { toast(`Leaderboard not saved (${e.message})${serverStatus?.hosted ? '' : '; restart the server?'}`); if (serverStatus?.hosted) endLiveMatch(tok); });
+      .catch((e) => { toast(`Leaderboard not saved (${e.message})${serverStatus?.hosted ? '' : '; restart the server?'}`); if (serverStatus?.hosted) { endLiveMatch(tok); return endingMatch; } });
+    if (mode === 'live' && serverStatus?.hosted) endingMatch = saved; // recording closes the match
   }
   celebrateThenResults(allDown ? 'ALL DOWN' : `${rosterById[match.winner].name} WINS`,
     `${allDown ? `${rosterById[match.winner].name} ranked first, ` : ''}${rec.note}; seed ${match.seed}, ${mode} mode, ${roster.length} fighters ${roster.includes('bot') ? 'with' : 'without'} bot, ${(match.tick / TICK_HZ).toFixed(1)} s; weapons: ${configSummary(match.weapons)}`, true);
