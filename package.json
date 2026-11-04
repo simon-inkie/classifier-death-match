@@ -1,7 +1,7 @@
 {
   "name": "classifier-arena",
   "version": "0.1.0",
-  "description": "Battle of the Classifiers: typed-decision models (plus an optional chat-model baseline) steer fighters in a deterministic top-down arena.",
+  "description": "Classifier Death Match: typed-decision models (plus an optional chat-model baseline) steer fighters in a deterministic top-down arena.",
   "license": "MIT",
   "author": "Simon Dixon",
   "repository": {
@@ -15,6 +15,7 @@
     "mock": "node server.js",
     "live": "node scripts/live.js",
     "headless": "node scripts/headless.js",
+    "autoplay": "node scripts/autoplay.js",
     "smoke": "node scripts/smoke.js",
     "test": "node --test test/*.test.js"
   },

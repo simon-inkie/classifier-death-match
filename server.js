@@ -18,6 +18,9 @@ const HOST = '127.0.0.1';
 const GATEWAY = process.env.AI_GATEWAY_BASE || 'https://ai-gateway.vercel.sh';
 const KEY = process.env.AI_GATEWAY_API_KEY || '';
 const BUDGET = Number(process.env.CALL_BUDGET || 3000);
+const COST_MAX = process.env.CALL_BUDGET_USD == null || process.env.CALL_BUDGET_USD === ''
+  ? null : Number(process.env.CALL_BUDGET_USD);
+if (COST_MAX !== null && (!Number.isFinite(COST_MAX) || COST_MAX < 0)) throw new Error('invalid CALL_BUDGET_USD');
 const TIMEOUT_MS = Number(process.env.CALL_TIMEOUT_MS || 2000);
 const LB_FILE = path.resolve(ROOT, process.env.LEADERBOARD_FILE || 'data/leaderboard.json');
 
@@ -46,6 +49,8 @@ function saveBoard() {
 const board = loadBoard();
 
 let used = 0;
+let usedUsd = 0;
+const costBudget = () => ({ used: usedUsd, max: COST_MAX });
 const perFighter = Object.fromEntries(ROSTER.map((r) => [r.id, { calls: 0, ok: 0, err: 0 }]));
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png' };
@@ -68,6 +73,8 @@ async function decide(fid, scene, weapons) {
   const fighter = rosterById[fid];
   if (!fighter || fighter.kind === 'bot') return { status: 400, body: { error: 'unknown fighter' } };
   if (!KEY) return { status: 503, body: { error: 'AI_GATEWAY_API_KEY not set' } };
+  if (COST_MAX !== null && usedUsd >= COST_MAX) return { status: 429,
+    body: { error: `cost budget spent ($${usedUsd}/$${COST_MAX})`, costBudget: costBudget() } };
   if (used >= BUDGET) return { status: 429, body: { error: `call budget spent (${used}/${BUDGET})`, budget: { used, max: BUDGET } } };
   used++;
   perFighter[fid].calls++;
@@ -87,10 +94,11 @@ async function decide(fid, scene, weapons) {
       console.log(`[call ${used}/${BUDGET}] ${fid} HTTP ${r.status} ${ms}ms ${msg.slice(0, 160)}`);
       return { status: 502, body: { error: `HTTP ${r.status}: ${msg}`, ms, budget: { used, max: BUDGET } } };
     }
-    const parsed = parseResponse(fighter, JSON.parse(txt));
+    const parsed = parseResponse(fighter, JSON.parse(txt), scene);
+    usedUsd += Math.max(0, Number(parsed.cost) || 0);
     perFighter[fid].ok++;
     console.log(`[call ${used}/${BUDGET}] ${fid} ok ${ms}ms -> ${parsed.action}`);
-    return { status: 200, body: { ...parsed, upstreamMs: ms, budget: { used, max: BUDGET } } };
+    return { status: 200, body: { ...parsed, upstreamMs: ms, budget: { used, max: BUDGET }, costBudget: costBudget() } };
   } catch (e) {
     perFighter[fid].err++;
     const ms = Math.round(performance.now() - t0);
@@ -106,7 +114,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, `http://${HOST}`);
     if (u.pathname === '/api/status') {
-      return send(res, 200, { keyLoaded: Boolean(KEY), budget: { used, max: BUDGET }, perFighter,
+      return send(res, 200, { keyLoaded: Boolean(KEY), budget: { used, max: BUDGET }, costBudget: costBudget(), perFighter,
         roster: ROSTER.map(({ id, name, model, kind, transport }) => ({ id, name, model, kind, transport })) });
     }
     if (u.pathname === '/api/decide' && req.method === 'POST') {
