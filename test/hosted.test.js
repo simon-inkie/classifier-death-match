@@ -60,10 +60,10 @@ function fakeGateway({ cost = 0.00001, fail = null, delayMs = 0 } = {}) {
 
 async function call(api, route, { method = 'POST', body, headers = {}, ip = '203.0.113.7', url = '/' } = {}) {
   const req = { method, url, body, headers: { 'x-real-ip': ip, ...headers } };
-  let status, out;
-  const res = { writeHead(c) { status = c; }, end(b) { out = b; } };
+  let status, out, hdrs;
+  const res = { writeHead(c, h) { status = c; hdrs = h; }, end(b) { out = b; } };
   await api.handle(route, req, res);
-  return { status, body: JSON.parse(Buffer.isBuffer(out) ? out.toString() : out) };
+  return { status, headers: hdrs || {}, body: JSON.parse(Buffer.isBuffer(out) ? out.toString() : out) };
 }
 
 function setup({ env = {}, gateway = fakeGateway(), clock = { t: Date.UTC(2026, 10, 4, 12) }, store } = {}) {
@@ -154,7 +154,7 @@ test('ceiling: a match closed while a call is reserving refuses that call and re
     const v = o[k];
     if (k === 'incrFloat') return async (key, by, ttl) => { const r = await v.call(o, key, by, ttl);
       if (armed && key.endsWith(':spent') && by > 0) { const t = armed; armed = null; await call(api, 'matchEnd', { body: { matchToken: t } }); } return r; };
-    return typeof v === 'function' ? v.bind(o) : v;
+    return typeof v === 'function' ? v.bind(k === 'multi' ? racing : o) : v; // multi runs through the hook too
   } });
   const s0 = setup({ store: racing, clock });
   api = s0.api;
@@ -612,4 +612,81 @@ test('leaderboard: decisions listed out of tick order are refused', async () => 
   const reversed = decisions.map((d) => ({ ...d, t: maxT - d.t }));
   const r = await call(api, 'record', { body: { decisions: reversed }, headers: { 'x-match-token': token }, ip: '192.0.2.78' });
   assert.equal(r.status, 400); assert.match(r.body.error, /tick order/);
+});
+
+// A store where every round trip (one method call, or one multi batch) takes L ms, to count the serial
+// round trips a decide waits on before and after its gateway call.
+const L = 25;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+class SlowStore extends MemoryStore {
+  durable = true;
+  async multi(ops) { await sleep(L); const out = []; for (const [m, ...a] of ops) out.push(await MemoryStore.prototype[m].apply(this, a)); return out; }
+}
+for (const m of ['get', 'set', 'setNx', 'setPx', 'del', 'incr', 'incrFloat', 'listPush', 'listRange', 'listTail', 'listRemove']) {
+  SlowStore.prototype[m] = async function (...a) { await sleep(L); return MemoryStore.prototype[m].apply(this, a); };
+}
+async function measureDecide(api, gw, token, fighter = 'jev') {
+  const t0 = performance.now();
+  const r = await call(api, 'decide', { body: { matchToken: token, fighter, scene: sceneIn(['jev', 'laya'], fighter) }, ip: '192.0.2.90' });
+  const t3 = performance.now(), [t1, t2] = gw.at;
+  return { r, before: Math.round((t1 - t0) / L), after: Math.round((t3 - t2) / L) };
+}
+function timedGateway(cost) {
+  const g = fakeGateway({ cost });
+  const out = { calls: g.calls, at: [], fetcher: async (url, o) => { out.at = [performance.now()]; const r = await g.fetcher(url, o); out.at.push(performance.now()); return r; } };
+  return out;
+}
+
+const SECRET = 'a-test-token-secret-of-enough-length';
+test('latency: a decide waits on 1 store round trip before the gateway call when warm, 2 when cold, and 1 after', async (t) => {
+  const clock = { t: Date.UTC(2026, 10, 4, 12) };
+  const gw = timedGateway(0.00001);
+  const { api, store } = setup({ env: { ARENA_TOKEN_SECRET: SECRET }, store: new SlowStore({ now: () => clock.t }), clock, gateway: gw });
+  const tok = (await start(api, ['jev', 'laya'], { ip: '192.0.2.90' })).body.matchToken;
+  clock.t += 200;
+  const warm = await measureDecide(api, gw, tok, 'jev');
+  assert.equal(warm.r.status, 200);
+  assert.match(warm.r.headers['Server-Timing'], /kv;dur=[\d.]+;desc="store, 1 before \+ 1 after", gateway;dur=[\d.]+, total;dur=[\d.]+/);
+  // another instance (no cached match record) serving the same match
+  const other = createHosted({ env: { AI_GATEWAY_API_KEY: KEY, ARENA_TOKEN_SECRET: SECRET }, store, fetch: gw.fetcher, now: () => clock.t, log: () => {} });
+  const cold = await measureDecide(other, gw, tok, 'laya');
+  assert.equal(cold.r.status, 200);
+  // a call that cost more than its bound settles its excess in one more trip
+  const dear = timedGateway('worst');
+  dear.fetcher = ((f) => async (url, o) => { const r = await f(url, o); const j = await r.json(); j.provider_metadata.gateway.cost *= 2; return { ...r, text: async () => JSON.stringify(j) }; })(dear.fetcher);
+  const d = createHosted({ env: { AI_GATEWAY_API_KEY: KEY, ARENA_TOKEN_SECRET: SECRET }, store, fetch: dear.fetcher, now: () => clock.t, log: () => {} });
+  clock.t += 200;
+  const excess = await measureDecide(d, dear, tok, 'jev');
+  assert.equal(excess.r.status, 200);
+  t.diagnostic(`serial store round trips: warm ${warm.before} before + ${warm.after} after; cold ${cold.before} + ${cold.after}; excess ${excess.before} + ${excess.after}`);
+  assert.equal(warm.before, 1, 'warm: lock, reservation and re-reads in one trip');
+  assert.equal(cold.before, 2, 'cold: the match record and lock, then the reservation and re-reads');
+  assert.equal(warm.after, 1); assert.equal(cold.after, 1, 'settlement, observation and lock release in one trip');
+  assert.ok(excess.after <= 2, 'excess: one more trip to put it on the day');
+});
+
+test('store batching: multi is one ordered /pipeline POST on the REST store; waitUntil takes only the idle timestamp', async () => {
+  const posts = [];
+  const fetcher = async (url, o) => {
+    const cmds = JSON.parse(o.body); posts.push({ url, cmds });
+    const res = cmds.map((c) => ({ result: c[0] === 'SET' ? (c.includes('NX') ? 'OK' : 'OK') : c[0] === 'INCRBYFLOAT' ? '1.5' : c[0] === 'GET' ? null : c[0] === 'RPUSH' ? 3 : 1 }));
+    return { ok: true, status: 200, json: async () => res };
+  };
+  const rs = new RestStore({ url: 'https://kv.example', token: 't', fetch: fetcher });
+  const out = await rs.multi([['setNx', 'lock', 1, 500], ['incrFloat', 'spent', 0.5, 60], ['get', 'closed'], ['listPush', 'acts', { a: 1 }, 10, 60]]);
+  assert.equal(posts.length, 1); assert.match(posts[0].url, /\/pipeline$/);
+  assert.deepEqual(posts[0].cmds.map((c) => c[0]), ['SET', 'INCRBYFLOAT', 'EXPIRE', 'GET', 'RPUSH', 'LTRIM', 'EXPIRE'], 'in the order given: raise first, read after');
+  assert.deepEqual(out, [true, 1.5, null, 3]);
+
+  const clock = { t: Date.UTC(2026, 10, 4, 12) };
+  const later = [];
+  const store = durableMemory(() => clock.t);
+  const api = createHosted({ env: { AI_GATEWAY_API_KEY: KEY }, store, fetch: fakeGateway().fetcher, now: () => clock.t, log: () => {}, waitUntil: (p) => later.push(p) });
+  const tok = (await call(api, 'matchStart', { body: { fighters: ['jev', 'laya'] }, ip: '192.0.2.91' })).body.matchToken, id = tok.split('.')[0];
+  const r = await call(api, 'decide', { body: { matchToken: tok, fighter: 'jev', scene: sceneIn(['jev', 'laya'], 'jev') }, ip: '192.0.2.91' });
+  assert.equal(r.status, 200); assert.equal(later.length, 1, 'one background write');
+  assert.equal((await store.listRange(`match:${id}:acts:jev`)).length, 1, 'the observation is written before the response');
+  assert.ok(Number(await store.get(`match:${id}:spent`)) > 0, 'and the charge');
+  await Promise.all(later);
+  assert.equal(await store.get(`match:${id}:last`), clock.t, 'the idle timestamp lands after');
 });
