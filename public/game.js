@@ -35,6 +35,19 @@ const gameNow = () => (pausedAt ?? performance.now()) - pausedTotal;
 const WLABEL = { pistol: 'PISTOL', shotgun: 'SHOTGUN', rifle: 'RIFLE', uzi: 'UZI', missile: 'MISSILE', flamethrower: 'FLAMER', medpack: 'MEDPACK' };
 let replay = null, replayLog = null, lastLog = null, effects = [];
 let serverStatus = null;
+// Hosted site and model picker. matchToken: issued by /api/match/start for a live match (null on the
+// local proxy, which needs none). pickedModels: slot id -> gateway model id, only used when the server
+// says the picker is on (and the server checks every id again).
+let matchToken = null, liveStarting = false, modelList = [];
+let pickedModels = readStoredObject('arenaPicked', {});
+function readStoredObject(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v && typeof v === 'object' ? v : d; } catch { return d; } }
+const slotModel = (id) => (mode === 'live' && serverStatus?.modelPicker && pickedModels[id]) || null; // mock simulates the roster
+const esc = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+// The model a panel names: from the log in replay, else the picked model, else the roster's.
+function shownModel(id) {
+  if (mode === 'replay' && replayLog) return replayLog.roster.find((r) => r.id === id)?.model ?? rosterById[id].model;
+  return slotModel(id) || rosterById[id].model;
+}
 // History scrub. hist holds every decision of the match per fighter. While a row is selected, view is
 // {tick, id, idx} and viewMatch is a separate, re-simulated state for that tick: the live match is never touched.
 const hist = new DecisionHistory();
@@ -136,6 +149,8 @@ function buildHeader() {
   $('lbMock').onchange = (e) => { lbIncludeMock = e.target.checked; renderLeaderboard(); };
   $('lbScope').onchange = (e) => { lbCurrentOnly = e.target.value === 'current'; renderLeaderboard(); };
   $('lbReset').onclick = resetLeaderboard;
+  $('noticeClose').onclick = () => notice(null);
+  $('splashGo').onclick = () => $('splash').classList.remove('show');
   setWeaponCfg(weaponCfg);
   document.addEventListener('keydown', (e) => {
     if (anyModal()) { // a dialog is open: no game keys, Escape closes it
@@ -191,7 +206,8 @@ function setMode(m) {
   $('replayGrp').style.display = m === 'replay' ? 'flex' : 'none';
   $('liveGrp').style.display = m === 'replay' ? 'none' : 'flex';
   $('rosterGrp').style.display = m === 'replay' ? 'none' : 'flex';
-  $('warm').style.display = m === 'live' ? '' : 'none';
+  $('warm').style.display = m === 'live' && !serverStatus?.hosted ? '' : 'none';
+  if (m !== 'live') notice(null); else if (serverStatus?.spendMessage) notice(serverStatus.spendMessage);
   history.replaceState(null, '', `?mode=${m}`);
   if (m === 'replay') refreshLogList(); else preview();
 }
@@ -203,7 +219,65 @@ async function refreshStatus() {
     k.textContent = serverStatus.keyLoaded ? 'KEY LOADED' : 'NO KEY';
     k.className = `chip ${serverStatus.keyLoaded ? 'ok' : 'bad'}`;
     updateBudget(serverStatus.budget);
+    applyHostedUi();
+    if (serverStatus.modelPicker) buildModelPickers(); else clearModelPickers();
   } catch { $('keyChip').textContent = 'PROXY DOWN'; $('keyChip').className = 'chip bad'; }
+}
+
+// ---------- hosted site: splash, live-budget notice; nothing here runs differently on the local proxy
+// except the splash, which only shows on the hosted site (or with &splash=1).
+function notice(msg) {
+  const n = $('notice');
+  if (!msg) { n.classList.remove('show'); return; }
+  $('noticeText').textContent = msg; n.classList.add('show');
+}
+function applyHostedUi() {
+  const hosted = Boolean(serverStatus?.hosted);
+  document.body.classList.toggle('hosted', hosted);
+  $('budgetChip').style.display = serverStatus?.budget ? '' : 'none';
+  $('warm').style.display = mode === 'live' && !hosted ? '' : 'none';
+  if (hosted) {
+    $('keyChip').textContent = serverStatus.spend?.exhausted ? 'LIVE PAUSED' : serverStatus.keyLoaded ? 'LIVE OPEN' : 'MOCK ONLY';
+    $('keyChip').className = `chip ${serverStatus.spend?.exhausted || !serverStatus.keyLoaded ? 'bad' : 'ok'}`;
+  }
+  if (serverStatus?.spendMessage && mode === 'live') notice(serverStatus.spendMessage);
+  // the intro shows once per browser (and again with &splash=1)
+  if (!applyHostedUi.splashed && ((hosted && !safeStore.get('arenaSplashSeen', false)) || params.get('splash') === '1')) {
+    applyHostedUi.splashed = true;
+    $('splash').classList.add('show');
+    safeStore.set('arenaSplashSeen', true);
+  }
+}
+
+// ---------- model picker (only when the server has ENABLE_MODEL_PICKER on)
+function clearModelPickers() { for (const el of document.querySelectorAll('.mpick')) el.remove(); }
+async function buildModelPickers() {
+  try {
+    const j = await (await fetch('/api/models')).json();
+    if (!j.enabled) { clearModelPickers(); return; }
+    modelList = Array.isArray(j.models) ? j.models : [];
+  } catch { return; }
+  clearModelPickers();
+  for (const r of ROSTER) {
+    if (r.kind === 'bot') continue;
+    const box = $(`chk-${r.id}`)?.closest('label');
+    if (!box) continue;
+    const sel = document.createElement('select');
+    sel.className = 'mpick'; sel.title = `Model for the ${r.name} slot`; sel.setAttribute('aria-label', sel.title);
+    const opts = [`<option value="">${esc(r.model)}</option>`];
+    for (const m of modelList) if (m.id !== r.model) opts.push(`<option value="${esc(m.id)}">${esc(m.id)}</option>`);
+    sel.innerHTML = opts.join('');
+    if (pickedModels[r.id] && modelList.some((m) => m.id === pickedModels[r.id])) sel.value = pickedModels[r.id];
+    else delete pickedModels[r.id];
+    sel.onchange = () => {
+      if (sel.value) pickedModels[r.id] = sel.value; else delete pickedModels[r.id];
+      safeStore.set('arenaPicked', pickedModels);
+      sel.blur();
+      if (!running) preview();
+    };
+    box.after(sel);
+  }
+  if (!running && mode !== 'replay') preview();
 }
 function updateBudget(b) {
   if (!b) return;
@@ -253,7 +327,7 @@ function buildPanels() {
       : r.kind === 'bot' ? 'Scripted if/else control: one-hot, no model'
       : `Typed decision: probability per option${promptVariant(r) === 'compact' ? '. Compact prompt (512-token limit)' : ''}`;
     el.innerHTML = `
-      <div class="ph"><span class="spr"></span><span class="name">${r.name}</span><span class="model">${r.model}</span><span class="st"></span></div>
+      <div class="ph"><span class="spr"></span><span class="name">${r.name}</span><span class="model">${esc(shownModel(id))}</span><span class="st"></span></div>
       <div class="viewtag"><span class="vt"></span><button type="button" class="vlive">Back to live</button></div>
       <div class="hp"><div class="fill"></div><span>100</span></div>
       <div class="stats">LAST <b class="last">-</b> MED <b class="med">-</b> <b class="dps">0.0</b>/S ERR <b class="err">0</b> COST <b class="cost">$0</b></div>
@@ -521,19 +595,65 @@ function start() {
     replay.ptr = Object.fromEntries(roster.map((id) => [id, 0]));
     match = replay.state;
     buildPanels();
-  } else {
-    if (mode === 'live' && !serverStatus?.keyLoaded) { toast('No AI_GATEWAY_API_KEY in the proxy: live mode cannot call models. Use Mock.'); return; }
+  } else if (mode === 'live') {
+    if (!serverStatus?.keyLoaded) { toast('No AI_GATEWAY_API_KEY in the proxy: live mode cannot call models. Use Mock.'); return; }
+    startLive();
+    return;
+  } else if (!beginMatch()) return;
+  launch();
+}
+
+// A live match asks the server first: it checks the fighters and models, the rate limit and the spend
+// ceiling, and (on the hosted site) issues the match token every call must carry.
+async function startLive() {
+  if (liveStarting) return;
+  liveStarting = true;
+  try {
     preview();
     if (roster.length < 2) return;
-    matchId++;
-    queue = [];
-    log = { version: 1, modelAims: Boolean(match.weapons.modelAims), mode, seed: match.seed, createdAt: new Date().toISOString(), bot: roster.includes('bot'),
-      roster: roster.map((id) => ({ ...rosterEntry(id), kind: rosterById[id].kind })),
-      weapons: match.weapons, weaponsId: match.cfgId, weaponsSummary: configSummary(match.weapons),
-      decisions: [] };
-    ctl = Object.fromEntries(roster.map((id) => [id, { lastAsk: -1e9, pending: false, since: 0 }]));
-    for (const id of roster) ask(id, matchId);
-  }
+    const models = Object.fromEntries(roster.filter((id) => slotModel(id)).map((id) => [id, slotModel(id)]));
+    const resp = await fetch('/api/match/start', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fighters: roster, models }) });
+    if (mode !== 'live' || running) return;
+    if (resp.status === 404) matchToken = null; // an older proxy without match start
+    else {
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const msg = j.message || j.error || `HTTP ${resp.status}`;
+        if (j.ceilingReached) { notice(msg); refreshStatus(); } else toast(msg, 6000);
+        return;
+      }
+      matchToken = j.matchToken || null;
+    }
+    notice(null);
+    if (beginMatch()) launch();
+  } catch (e) {
+    toast(`Could not start a live match: ${e.message}`);
+  } finally { liveStarting = false; }
+}
+
+function beginMatch() {
+  preview();
+  if (roster.length < 2) return false;
+  matchId++;
+  queue = [];
+  log = { version: 1, modelAims: Boolean(match.weapons.modelAims), mode, seed: match.seed, createdAt: new Date().toISOString(), bot: roster.includes('bot'),
+    roster: roster.map((id) => ({ ...rosterEntry(id), kind: rosterById[id].kind, ...pickedEntry(id) })),
+    weapons: match.weapons, weaponsId: match.cfgId, weaponsSummary: configSummary(match.weapons),
+    decisions: [] };
+  ctl = Object.fromEntries(roster.map((id) => [id, { lastAsk: -1e9, pending: false, since: 0 }]));
+  for (const id of roster) ask(id, matchId);
+  return true;
+}
+// A picked model is recorded in the log (and its prompt variant), so a replay names what really played.
+function pickedEntry(id) {
+  const m = slotModel(id);
+  if (!m) return {};
+  const same = ROSTER.find((r) => r.model === m && r.kind !== 'bot');
+  return { model: m, picked: true, prompt: same ? promptVariant(same) : 'full', kind: same ? same.kind : 'chat' };
+}
+
+function launch() {
   running = true; acc = 0; lastFrame = performance.now();
   effects.push({ type: 'banner', text: 'FIGHT!', life: 45 });
   audio.sfx.start();
@@ -569,7 +689,7 @@ async function ask(id, mid) {
   c.lastAsk = gameNow(); c.pending = true; c.since = c.lastAsk;
   const scene = sceneFor(match, id);
   const r = rosterById[id];
-  let ans = null, err = null, ms = 0, cost = 0, costEst = false;
+  let ans = null, err = null, ms = 0, cost = 0, costEst = false, halt = false;
   if (r.kind === 'bot') {
     const t0 = performance.now();
     ans = botDecide(scene);
@@ -592,11 +712,16 @@ async function ask(id, mid) {
     const t0 = performance.now();
     try {
       const resp = await fetch('/api/decide', { method: 'POST', signal: ac.signal,
-        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fighter: id, scene, weapons: match.weapons }) });
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fighter: id, scene, weapons: match.weapons, matchToken: matchToken || undefined, model: slotModel(id) || undefined }) });
       const j = await resp.json();
       ms = performance.now() - t0;
       if (j.budget) updateBudget(j.budget);
-      if (!resp.ok) err = j.error || `HTTP ${resp.status}`;
+      if (!resp.ok) {
+        err = j.error || `HTTP ${resp.status}`;
+        halt = j.stop === true;
+        if (j.ceilingReached && mid === matchId) { notice(j.message || err); refreshStatus(); }
+      }
       else {
         ans = j;
         // real when the proxy had the billed cost or token usage; an older proxy sends no costSource
@@ -611,7 +736,7 @@ async function ask(id, mid) {
   if (mid !== matchId) return;
   queue.push({ id, ans, err, ms: Math.round(ms), cost, costEst });
   c.pending = false;
-  if (err && /budget spent|not set/.test(err)) { toast(err); return; } // no runaway retries
+  if (err && (halt || /budget spent|not set/.test(err))) { toast(err); return; } // no runaway retries
   scheduleNext(id, mid);
 }
 
@@ -704,11 +829,16 @@ function finishMatch() {
   wins[match.winner] = (wins[match.winner] || 0) + 1;
   safeStore.set('arenaWins', wins);
   fetch('/api/logs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(log) })
-    .then((r) => r.json()).then((j) => toast(`Saved logs/${j.name}`)).catch(() => toast('Could not save log to server; use Download'));
-  // All-time leaderboard: live matches always; mock only while "Include mock" is ticked.
+    .then((r) => r.json()).then((j) => toast(j.name ? `Saved logs/${j.name}` : 'Match log not kept on this server; use Download on the results screen'))
+    .catch(() => toast('Could not save log to server; use Download'));
+  // All-time leaderboard: live matches always; mock only while "Include mock" is ticked. A match with a
+  // picked model is never recorded: the board is per roster fighter, and that slot ran something else.
   const rec = buildRecord({ state: match, mode, weapons: match.weapons, stats });
-  if (mode === 'live' || (mode === 'mock' && lbIncludeMock)) {
-    fetch('/api/leaderboard/record', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rec) })
+  const anyPicked = log.roster.some((r) => r.picked);
+  const recordable = (mode === 'live' || (mode === 'mock' && lbIncludeMock && !serverStatus?.hosted)) && !anyPicked;
+  if (recordable) {
+    fetch('/api/leaderboard/record', { method: 'POST', body: JSON.stringify(rec),
+      headers: { 'Content-Type': 'application/json', ...(mode === 'live' && matchToken ? { 'X-Match-Token': matchToken } : {}) } })
       .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); })
       .catch((e) => toast(`Leaderboard not saved (${e.message}); restart the server?`));
   }
@@ -805,7 +935,7 @@ function showResults(title, sub, countWins) {
   const rows = match.ranking.map((id, i) => {
     const f = match.fighters.find((x) => x.id === id), s = stats[id], r = rosterById[id];
     const secs = Math.max(1, ((f.deathTick ?? match.tick)) / TICK_HZ);
-    return `<tr><td>${i + 1}</td><td style="color:${r.colour}"><img class="sprite rs" alt="" style="box-shadow:0 0 0 2px ${r.colour}" src="${spriteDataUrl(id, 24)}">${r.name} <span style="color:var(--dim);font-size:10px">${r.model}</span></td>
+    return `<tr><td>${i + 1}</td><td style="color:${r.colour}"><img class="sprite rs" alt="" style="box-shadow:0 0 0 2px ${r.colour}" src="${spriteDataUrl(id, 24)}">${r.name} <span style="color:var(--dim);font-size:10px">${esc(shownModel(id))}</span></td>
       <td>${Math.max(0, f.hp)}</td><td>${f.kills}</td><td>${wins[id] || 0}</td><td>${s.decisions}</td>
       <td>${(s.decisions / secs).toFixed(1)}</td><td>${fmtMs(median(s.lat))}</td><td>${s.errors}</td>
       <td>${f.shots ? Math.round((f.hits / f.shots) * 100) + '%' : '-'}</td><td>${r.kind === 'bot' ? '-' : `${s.costEst ? '~' : ''}$${s.cost.toFixed(5)}`}</td></tr>`;

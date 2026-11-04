@@ -133,6 +133,17 @@
   #wpnPickups .pk { margin: 4px 0; font-size: 12px; }
   #wpnPickups .pk > .dim { display: block; }
   #wpnTable td:first-child, #wpnTable th:first-child { text-align: center; }
+  select.mpick { max-width: 150px; text-transform: none; font-size: 10px; padding: 2px 4px; }
+  #notice { display: none; position: fixed; top: 52px; left: 50%; transform: translateX(-50%); z-index: 42; max-width: min(92vw, 560px);
+    background: #1a1408; border: 2px solid var(--hot); color: var(--ink); padding: 8px 12px; font-size: 12px; align-items: center; gap: 10px; }
+  #notice.show { display: flex; }
+  #notice button { padding: 0 6px; font-size: 11px; }
+  #splash .box { max-width: min(92vw, 520px); }
+  #splash p { font-size: 12px; line-height: 1.6; color: var(--ink); margin: 8px 0; }
+  #splash .by { color: var(--dim); font-size: 11px; letter-spacing: 2px; }
+  a { color: var(--hot); }
+  #madeBy { position: fixed; right: 10px; bottom: 6px; z-index: 30; font-size: 10px; letter-spacing: 1px; color: var(--dim); text-decoration: none; opacity: 0.8; }
+  #madeBy:hover, #madeBy:focus-visible { color: var(--hot); opacity: 1; }
   @media (max-width: 900px) {
     body { overflow: auto; }
     main { grid-template-columns: 1fr; }
@@ -223,6 +234,19 @@
     <button id="lbClose" class="go">Close</button>
   </div>
 </div></div>
+<div id="notice" role="status"><span id="noticeText"></span><button id="noticeClose" type="button" aria-label="Dismiss">OK</button></div>
+<div id="splash" class="modal" role="dialog" aria-labelledby="splashTitle"><div class="box">
+  <div class="by">INKIE PRESENTS</div>
+  <h2 id="splashTitle">CLASSIFIER DEATH MATCH</h2>
+  <p>AI models steer fighters round an arena. Every turn each one gets a description of the scene and picks one of eight moves. Typed-decision classifiers return a probability for every option; a chat model, if you add one, is asked for JSON.</p>
+  <p>Speed matters: a model that answers faster gets more turns. <b>Mock</b> is free and needs no network, <b>Live</b> calls the real models, and <b>Replay</b> plays back saved matches exactly.</p>
+  <p class="dim">The code is open source. No tracking, no sign-up.</p>
+  <div class="btns">
+    <button id="splashGo" class="go" type="button">Play</button>
+    <a href="https://inkie.ink" target="_blank" rel="noopener">Made by Inkie</a>
+  </div>
+</div></div>
+<a id="madeBy" href="https://inkie.ink" target="_blank" rel="noopener">MADE BY INKIE</a>
 <div id="toast"></div>
 <script type="module" src="game.js"></script>
 </body>
