@@ -173,5 +173,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`Classifier Arena on http://${HOST}:${PORT}  key loaded: ${KEY ? 'yes' : 'no (mock and replay only)'}  call budget: ${BUDGET}`);
+  console.log(`Inkie Arena on http://${HOST}:${PORT}  key loaded: ${KEY ? 'yes' : 'no (mock and replay only)'}  call budget: ${BUDGET}`);
 });

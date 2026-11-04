@@ -1,7 +1,7 @@
 {
-  "name": "classifier-arena",
+  "name": "inkie-arena",
   "version": "0.1.0",
-  "description": "Classifier Death Match: typed-decision models (plus an optional chat-model baseline) steer fighters in a deterministic top-down arena.",
+  "description": "Inkie Arena: typed-decision models (plus an optional chat-model baseline) steer fighters in a deterministic top-down arena.",
   "license": "MIT",
   "author": "Inkie (https://inkie.ink)",
   "homepage": "https://github.com/simon-inkie/classifier-arena#readme",
