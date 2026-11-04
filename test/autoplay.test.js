@@ -198,7 +198,7 @@ test('offline proxy integration on 8795: USD cap, status, and concurrent atomic 
   try {
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`proxy startup timeout: ${stderr}`)), 5000);
-      child.stdout.on('data', (b) => { if (String(b).includes('Inkie Arena on')) { clearTimeout(timer); resolve(); } });
+      child.stdout.on('data', (b) => { if (String(b).includes('Classifier Death Match on')) { clearTimeout(timer); resolve(); } });
       child.once('exit', () => { clearTimeout(timer); reject(new Error(`proxy exited: ${stderr}`)); });
     });
     const post = (route, body) => fetch(`http://127.0.0.1:8795${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });

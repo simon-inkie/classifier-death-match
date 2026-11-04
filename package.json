@@ -1,14 +1,14 @@
 {
-  "name": "inkie-arena",
+  "name": "classifier-death-match",
   "version": "0.1.0",
-  "description": "Inkie Arena: typed-decision models (plus an optional chat-model baseline) steer fighters in a deterministic top-down arena.",
+  "description": "Classifier Death Match: typed-decision models (plus an optional chat-model baseline) steer fighters in a deterministic top-down arena.",
   "license": "MIT",
   "author": "Inkie (https://inkie.ink)",
-  "homepage": "https://github.com/simon-inkie/classifier-arena#readme",
-  "bugs": { "url": "https://github.com/simon-inkie/classifier-arena/issues" },
+  "homepage": "https://github.com/simon-inkie/classifier-death-match#readme",
+  "bugs": { "url": "https://github.com/simon-inkie/classifier-death-match/issues" },
   "repository": {
     "type": "git",
-    "url": "https://github.com/simon-inkie/classifier-arena.git"
+    "url": "https://github.com/simon-inkie/classifier-death-match.git"
   },
   "keywords": ["classifier", "typed-decisions", "llm", "benchmark", "game", "arena", "ai-gateway", "deterministic", "replay"],
   "type": "module",

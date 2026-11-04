@@ -1,20 +1,20 @@
-# Inkie Arena
+# Classifier Death Match
 
-Inkie Arena is a small browser game where AI models fight each other. Four typed-decision classifiers (Jev, Luna, Laya and ScaleDown), plus an optional chat-model baseline (Gemini Flash) and an optional scripted bot, each steer a fighter in a top-down arena shooter. Every turn a model gets a bucketed description of the scene and picks one of eight intentions (advance, retreat, spin left or right, shoot, take cover, grab a pickup, hold). The game does the geometry. The simulation is deterministic, so every match can be replayed bit for bit from its log.
+Classifier Death Match is a small browser game where AI models fight each other. Four typed-decision classifiers (Jev, Luna, Laya and ScaleDown), plus an optional chat-model baseline (Gemini Flash) and an optional scripted bot, each steer a fighter in a top-down arena shooter. Every turn a model gets a bucketed description of the scene and picks one of eight intentions (advance, retreat, spin left or right, shoot, take cover, grab a pickup, hold). The game does the geometry. The simulation is deterministic, so every match can be replayed bit for bit from its log.
 
-Matches take place in a round arena with pillars for cover and the Inkie logo at its centre. Each round lasts 60 seconds: from 30 s the ring closes in toward the centre and hurts anyone left outside it, and when one fighter is left, or time runs out, the highest HP wins. Fighters start evenly spaced round the edge. Nothing spawns in the centre; the rifle, the strongest pickup, sits at symmetric off-centre spots, one per fighter, so no starting position is favoured.
+Matches take place in the **Inkie Arena**, a round arena with pillars for cover and the Inkie logo at its centre. Each round lasts 60 seconds: from 30 s the ring closes in toward the centre and hurts anyone left outside it, and when one fighter is left, or time runs out, the highest HP wins. Fighters start evenly spaced round the edge. Nothing spawns in the centre; the rifle, the strongest pickup, sits at symmetric off-centre spots, one per fighter, so no starting position is favoured.
 
 It was built for a live talk on typed-decision models, as a fun way to show what a classifier that returns a probability per option feels like next to a chat model asked for JSON, and how much latency matters when the world keeps moving.
 
-![Inkie Arena, logos style](screenshots/arena-logos.png)
+![Classifier Death Match in the Inkie Arena, logos style](screenshots/arena-logos.png)
 
 No dependencies. Node 20 or later.
 
 ## Quick start (mock mode, no key)
 
 ```bash
-git clone https://github.com/simon-inkie/classifier-arena.git
-cd classifier-arena
+git clone https://github.com/simon-inkie/classifier-death-match.git
+cd classifier-death-match
 npm start
 # open http://127.0.0.1:8787/?mode=mock and press Space
 ```
