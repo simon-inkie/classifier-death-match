@@ -67,6 +67,9 @@ export function buildRecord({ state, mode, weapons, stats, ts = new Date().toISO
 // Server side: accept only well-formed records, with numbers clamped and strings cut short.
 const num = (v, min, max, d = 0) => { const n = Number(v); return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : d; };
 const str = (v, n) => String(v ?? '').slice(0, n);
+// Free text in a record is shown on the leaderboard page: keep it to plain characters (no markup), so a
+// hostile record cannot carry HTML even if a renderer forgets to escape.
+const plain = (v, n) => str(v, n).replace(/[^\w .,;:()+\-\/=%~]/g, '');
 export function cleanRecord(r) {
   if (!r || typeof r !== 'object') throw new Error('no record');
   if (r.mode !== 'live' && r.mode !== 'mock') throw new Error('mode must be live or mock');
@@ -85,8 +88,8 @@ export function cleanRecord(r) {
   if (!fighters.some((f) => f.id === r.winner)) throw new Error('winner not in the match');
   const ts = Number.isFinite(Date.parse(r.ts)) ? new Date(r.ts).toISOString() : new Date().toISOString();
   return { ts, modelAims: r.modelAims === true, mode: r.mode, seed: num(r.seed, -1e9, 1e9) | 0, ticks: num(r.ticks, 0, 1e6) | 0, timeUp: Boolean(r.timeUp),
-    winner: r.winner, note: str(r.note, 300), tie: Boolean(r.tie), cfgId: str(r.cfgId, 16).replace(/[^0-9a-f]/g, ''),
-    cfgSummary: str(r.cfgSummary, 400), fighters };
+    winner: r.winner, note: plain(r.note, 300), tie: Boolean(r.tie), cfgId: str(r.cfgId, 16).replace(/[^0-9a-f]/g, ''),
+    cfgSummary: plain(r.cfgSummary, 400), fighters };
 }
 
 // Records to standings. Live only unless includeMock; optionally one config only.
