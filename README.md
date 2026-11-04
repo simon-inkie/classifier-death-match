@@ -96,10 +96,12 @@ This is a limitation of the model, not a tuning choice, and it is shown openly: 
 
 ## Playing
 
+On first load a setup panel walks you through a match: the fighters (with their logos and models, and the model picker when the server has it on), **Live** or **Mock**, whether models aim, and the character style. It defaults to Live and logos; if Live cannot run (no key, today's budget spent, or no server) it says why and starts in Mock. Tick **Do not show this again** to skip it; the **Setup** button opens it any time, and `&nosplash=1` or `&splash=1` hides or forces it for one load. Everything it sets is the same setting as the header controls, so the two always agree.
+
 In the page, pick **Mock**, **Live** or **Replay**, tick the fighters you want, and press **Start** or the space bar. The default line-up is the four classifiers. **Gemini** and the **Scripted bot (control)** are tick-boxes, off by default (or `&gemini=1`, `&bot=1` in the URL). Up to six fighters.
 
 - Each fighter asks again as soon as its last answer lands, at most 10 times a second. While a call is pending it keeps its last action for 300 ms, then stands still. A ring fills under it while it waits. After 2 s with no answer, or on an error, it is stunned (red `!`) until its next good answer. Latency is the only handicap.
-- **Character style**: **Classic** (coloured discs) or **Logos** (a 16x16 pixel sprite per fighter inside a team-coloured ring). Toggle with the STYLE buttons or `L`; `&style=logos` forces it for one load.
+- **Character style**: **Logos** (a 16x16 pixel sprite per fighter inside a team-coloured ring, the default) or **Classic** (coloured discs). Toggle with the STYLE buttons or `L`; `&style=logos` forces it for one load.
 - **Sound**: retro effects and optional chiptune music, synthesised with the Web Audio API in `public/audio.js` (no audio files). Sound is presentation only and never changes the simulation.
 
 ### Model aims (optional)
@@ -186,7 +188,7 @@ What the hosted API adds:
 - **Match tokens and limits.** Every live match starts with `POST /api/match/start`, which fixes the fighters, models, seed and weapons, checks the limits and reserves the first tranche, then issues a signed token with an expiry that each `/api/decide` call must carry; bad or expired tokens are rejected before any store read. A match must finish within 2.5 minutes of starting, pauses included. One live match can be open per client network at a time, and no line-up may need more than a quarter of the daily ceiling (`MAX_MATCH_SHARE`, default 0.25). Each fighter has one call in flight at a time, with at least 90 ms between call starts. Starting matches is limited per client network (an IPv4 address or an IPv6 /48: `MATCH_RATE_LIMIT`, default 5 per `MATCH_RATE_WINDOW_S`, default 600 seconds; a match ended at once still counts), and the whole site allows at most `MAX_OPEN_MATCHES` open matches (default 40). That cap is checked by adding the match and then comparing, so a burst cannot pass it; a refused start holds nothing, and a match ended within 20 seconds keeps its place for those 20 seconds, so starting and ending at once cannot churn it. Every route also has a small per-instance, in-memory throttle that runs before any store read. Addresses are only used hashed, in keys that expire with their window. The page releases a match's budget when it is stopped, restarted or closed (`POST /api/match/end`).
 - **Leaderboard.** Records are built on the server, never taken from the page. The page sends only its decisions: which answer it applied on which tick, and where its fighters were stunned. The server checks each fighter's applied answers against what it observed for that token, in order, allows only a few dropped answers and no more stuns than failed or dropped calls, re-runs the deterministic simulation from the seed and weapons fixed at start, and builds the record from the result. Latency, cost, error and timeout figures come from the server's own observations. One record per match, at most 20 per network a day; matches with the scripted bot or a picked model are not recorded there, and nor are mock matches. The page could still choose the tick each answer landed on and drop a few answers; closing that would mean running the simulation on the server. The page escapes every record field, record text is limited to plain characters, and a Content-Security-Policy header blocks inline scripts. The board serves the latest 500 matches, cached at the edge for 30 seconds; a flood of records from many networks can still push older ones out of that window.
 - **Logs.** Finished match logs are not kept on the server; players can download them from the results screen. The Replay list offers the bundled examples.
-- **Intro.** The hosted site shows a short intro once per browser (`&splash=1` shows it anywhere), and every page has a small link to [inkie.ink](https://inkie.ink). There is no tracking or analytics.
+- **Intro.** The setup panel doubles as the intro, and every page has a small link to [inkie.ink](https://inkie.ink). There is no tracking or analytics.
 
 ### What the deployer must set (outside the code)
 
@@ -260,6 +262,7 @@ The tests cover determinism (same seed and log give an identical state on every 
 - `public/sim.js`: deterministic simulation, scene bucketing, hash, replay cursor.
 - `public/weapons.js`: weapon numbers and the weapon config, including the pickup settings (defaults, clamping, id, summary).
 - `public/brain.js`: scripted bot, mock models, headless runner.
+- `public/setup.js`: first-run setup panel decisions (when it shows, the first mode, whether Live is available).
 - `public/leaderboard.js`: leaderboard records, validation and aggregation.
 - `public/game.js`, `public/index.html`: canvas, panels, decision loops, record and replay.
 - `public/history.js` (decision history, rewind to a tick), `public/controls.js`, `public/sprites.js`, `public/audio.js`: space bar rules, pixel sprites, synthesised sound.
