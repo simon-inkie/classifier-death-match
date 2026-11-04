@@ -613,7 +613,7 @@ async function startLive() {
     if (roster.length < 2) return;
     const models = Object.fromEntries(roster.filter((id) => slotModel(id)).map((id) => [id, slotModel(id)]));
     const resp = await fetch('/api/match/start', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fighters: roster, models }) });
+      body: JSON.stringify({ fighters: roster, models, seed: Number($('seed').value) | 0, weapons: weaponCfg }) });
     if (mode !== 'live' || running) return;
     if (resp.status === 404) matchToken = null; // an older proxy without match start
     else {
@@ -660,7 +660,17 @@ function launch() {
   updateControls();
 }
 
+// Hand an unfinished hosted match back, so its unused budget is released straight away.
+function endLiveMatch(tok = matchToken) {
+  if (!tok) return;
+  const body = JSON.stringify({ matchToken: tok });
+  if (matchToken === tok) matchToken = null;
+  try { navigator.sendBeacon?.('/api/match/end', new Blob([body], { type: 'application/json' })) || fetch('/api/match/end', { method: 'POST', body, keepalive: true }); } catch {}
+}
+addEventListener('pagehide', () => { if (running && mode === 'live') endLiveMatch(); });
+
 function stop() {
+  if (mode === 'live' && running) endLiveMatch();
   view = null; viewMatch = null; viewStats = null; updateViewUi();
   running = false;
   clearPause();
@@ -836,11 +846,16 @@ function finishMatch() {
   const rec = buildRecord({ state: match, mode, weapons: match.weapons, stats });
   const anyPicked = log.roster.some((r) => r.picked);
   const recordable = (mode === 'live' || (mode === 'mock' && lbIncludeMock && !serverStatus?.hosted)) && !anyPicked;
-  if (recordable) {
-    fetch('/api/leaderboard/record', { method: 'POST', body: JSON.stringify(rec),
-      headers: { 'Content-Type': 'application/json', ...(mode === 'live' && matchToken ? { 'X-Match-Token': matchToken } : {}) } })
-      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); })
-      .catch((e) => toast(`Leaderboard not saved (${e.message}); restart the server?`));
+  // The hosted site builds the record itself from the decisions (re-run and checked on the server).
+  const recBody = serverStatus?.hosted && mode === 'live'
+    ? { decisions: log.decisions.map(({ t, f, a, ms, err, cost, costEst }) => ({ t, f, a, ms, err, cost, ...(costEst ? { costEst } : {}) })) } : rec;
+  if (mode === 'live' && serverStatus?.hosted && (!recordable || roster.includes('bot'))) endLiveMatch();
+  if (recordable && !(serverStatus?.hosted && roster.includes('bot'))) {
+    const tok = matchToken;
+    fetch('/api/leaderboard/record', { method: 'POST', body: JSON.stringify(recBody),
+      headers: { 'Content-Type': 'application/json', ...(mode === 'live' && tok ? { 'X-Match-Token': tok } : {}) } })
+      .then(async (r) => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`); if (matchToken === tok) matchToken = null; })
+      .catch((e) => { toast(`Leaderboard not saved (${e.message})${serverStatus?.hosted ? '' : '; restart the server?'}`); if (serverStatus?.hosted) endLiveMatch(tok); });
   }
   celebrateThenResults(allDown ? 'ALL DOWN' : `${rosterById[match.winner].name} WINS`,
     `${allDown ? `${rosterById[match.winner].name} ranked first, ` : ''}${rec.note}; seed ${match.seed}, ${mode} mode, ${roster.length} fighters ${roster.includes('bot') ? 'with' : 'without'} bot, ${(match.tick / TICK_HZ).toFixed(1)} s; weapons: ${configSummary(match.weapons)}`, true);
@@ -1308,7 +1323,7 @@ async function openLeaderboard() {
   }
   renderLeaderboard();
 }
-const fighterCell = (id) => { const r = rosterById[id]; return r ? `<span style="color:${r.colour}">${r.name}</span>` : id; };
+const fighterCell = (id) => { const r = Object.hasOwn(rosterById, id) ? rosterById[id] : null; return r ? `<span style="color:${r.colour}">${r.name}</span>` : esc(id); };
 function renderLeaderboard() {
   if (!lbData) return;
   const opts = { includeMock: lbIncludeMock, cfgId: lbCurrentOnly ? configId(weaponCfg) : null };
@@ -1320,13 +1335,13 @@ function renderLeaderboard() {
     $('lbBody').innerHTML = `<p class="dim">No ${lbIncludeMock ? '' : 'live '}matches recorded${lbCurrentOnly ? ' with the current weapons' : ''} yet.</p>`;
     return;
   }
-  const t = rows.map((a, i) => `<tr><td>${i + 1}</td><td>${fighterCell(a.id)}${topKills.includes(a.id) ? ' <span class="lbBadge" title="Most total kills">most kills</span>' : ''}</td><td>${a.played}</td><td>${a.wins}</td>
+  const t = rows.map((a, i) => `<tr><td>${i + 1}</td><td>${fighterCell(a.id)}${topKills.includes(a.id) ? ' <span class="lbBadge" title="Most total kills">most kills</span>' : ''}</td><td>${esc(a.played)}</td><td>${esc(a.wins)}</td>
     <td>${Math.round(a.winRate * 100)}%</td><td>${a.avgPlace.toFixed(2)}</td><td>${a.avgSurvivalS.toFixed(1)} s</td>
-    <td${topKills.includes(a.id) ? ' class="lbTop"' : ''}>${a.kills}</td><td>${a.damage}</td><td>${fmtMs(a.meanMs)}</td><td>${a.errors}</td><td>${a.timeouts}</td>
+    <td${topKills.includes(a.id) ? ' class="lbTop"' : ''}>${esc(a.kills)}</td><td>${esc(a.damage)}</td><td>${esc(fmtMs(a.meanMs))}</td><td>${esc(a.errors)}</td><td>${esc(a.timeouts)}</td>
     <td>${fmtUsd(a.totalCost, a.costEst)}</td><td>${fmtUsd(a.avgCostGame, a.costEst)}</td><td>${fmtUsd(a.costPerCall, a.costEst)}</td></tr>`).join('');
   const recent = [...recs].reverse().slice(0, 12).map((m) => `<tr><td>${new Date(m.ts).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</td>
-    <td>${fighterCell(m.winner)} <span class="dim">${m.note}</span></td><td>${m.mode}</td><td>${m.fighters.length}</td><td>${m.seed}</td>
-    <td class="dim" title="${m.cfgSummary}">${m.cfgId} (${m.modelAims ? 'aims ON' : 'aims OFF'})</td></tr>`).join('');
+    <td>${fighterCell(m.winner)} <span class="dim">${esc(m.note)}</span></td><td>${esc(m.mode)}</td><td>${Number(m.fighters?.length) || 0}</td><td>${esc(m.seed)}</td>
+    <td class="dim" title="${esc(m.cfgSummary)}">${esc(m.cfgId)} (${m.modelAims ? 'aims ON' : 'aims OFF'})</td></tr>`).join('');
   $('lbBody').innerHTML = `<p class="dim">${recs.length} match${recs.length === 1 ? '' : 'es'}${lbIncludeMock ? ', live and mock' : ', live only'}${lbCurrentOnly ? `, weapons ${configId(weaponCfg)}` : ', all weapon configs'}. Cost: ~ includes estimates; per request = total cost / requests sent; matches recorded before cost tracking show -.</p>
     <table id="lbTable"><tr><th>#</th><th>Fighter</th>${LB_COLS.map(([k, n]) => `<th class="lbSort" data-k="${k}" title="Sort by ${n}">${n}${lbSort?.key === k ? (lbSort.dir === 1 ? ' &#9660;' : ' &#9650;') : ''}</th>`).join('')}</tr>${t}</table>
     <h3>Recent matches</h3>
@@ -1334,7 +1349,7 @@ function renderLeaderboard() {
   const aims = recs.filter((m) => m.modelAims);
   if (aims.length) {
     const ids = ROSTER.filter((r) => aims.some((m) => m.fighters.some((f) => f.id === r.id))).map((r) => r.id);
-    $('lbBody').insertAdjacentHTML('beforeend', `<h3>Who targets whom (choices)</h3><table id="lbTargets"><tr><th>Shooter / target</th>${ids.map((id) => `<th>${fighterCell(id)}</th>`).join('')}</tr>${ids.map((id) => `<tr><th>${fighterCell(id)}</th>${ids.map((target) => `<td>${id === target ? '-' : aims.reduce((n, m) => n + (m.fighters.find((f) => f.id === id)?.targetsChosen?.[target] || 0), 0)}</td>`).join('')}</tr>`).join('')}</table>`);
+    $('lbBody').insertAdjacentHTML('beforeend', `<h3>Who targets whom (choices)</h3><table id="lbTargets"><tr><th>Shooter / target</th>${ids.map((id) => `<th>${fighterCell(id)}</th>`).join('')}</tr>${ids.map((id) => `<tr><th>${fighterCell(id)}</th>${ids.map((target) => `<td>${id === target ? '-' : esc(aims.reduce((n, m) => n + (Number(m.fighters.find((f) => f.id === id)?.targetsChosen?.[target]) || 0), 0))}</td>`).join('')}</tr>`).join('')}</table>`);
   }
   document.querySelectorAll('#lbTable th.lbSort').forEach((th) => {
     th.onclick = () => {
