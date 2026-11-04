@@ -36,7 +36,7 @@ A match makes up to 10 calls per second per fighter for up to 60 seconds. The pr
 
 `node scripts/smoke.js 2 jev laya` makes two live calls per named fighter through a running proxy (`ARENA_URL` overrides the address). Add `--worst` to send the worst-case scene (six fighters, every weapon on, incoming fire), which is how the prompt sizes below were checked.
 
-Other environment variables: `PORT` (8787), `CALL_TIMEOUT_MS` (2000), `AI_GATEWAY_BASE`, `LEADERBOARD_FILE` (`data/leaderboard.json`).
+Other environment variables: `PORT` (8787), `CALL_TIMEOUT_MS` (2000), `AI_GATEWAY_BASE`, `LEADERBOARD_FILE` (`data/leaderboard.json`), and `ENABLE_MODEL_PICKER` (see [Model picker](#model-picker-optional-off-by-default)). The full list is under [Environment variables](#environment-variables).
 
 ## Unattended live matches (AUTO-PLAY)
 
@@ -154,7 +154,7 @@ An egocentric, bucketed scene: its HP, weapon, ammo, weapon range bucket, whethe
 - Fighters level on alive, HP and time of death share a place. There is always a recorded winner (tie-break: kills, then roster order), and the match notes how it was won.
 - Autoplay batches record to the same board, but only completed matches whose logs replay-verify; matches stopped by a budget are marked `aborted` and left out.
 - **Reset leaderboard** asks to confirm, and the server keeps a backup copy (`data/leaderboard-<time>.bak.json`). Everything under `data/` is local and ignored by git.
-- Endpoints: `GET /api/leaderboard`, `POST /api/leaderboard/record`, `POST /api/leaderboard/reset` with `{"confirm":"RESET"}`.
+- Endpoints: `GET /api/leaderboard`, `POST /api/leaderboard/record`, `POST /api/leaderboard/reset` with `{"confirm":"RESET"}`. The hosted site keeps its own board in the durable store, with stricter rules (see [Running in production](#running-in-production-vercel)).
 
 ## Replay and determinism
 
@@ -168,15 +168,48 @@ Replay loading maps legacy `strafe_left` / `strafe_right` actions and probabilit
 
 Logs recorded before the rifle was moved to its off-centre spots, or before the weapon update in November 2026, no longer verify (the bundled `examples/` were regenerated), because the simulation changed. Logs from before the pickup settings existed have no `pickups` field and replay with density 1 and respawn rate 1, and their config id is unchanged (they verify only if recorded after the rifle moved to its off-centre spots). Older logs that contain a `threat` field (from an earlier two-question version) still replay; the field is ignored.
 
+## Model picker (optional, off by default)
+
+Set `ENABLE_MODEL_PICKER=1` and a model drop-down appears next to each fighter's tick-box: any language model on the Vercel AI Gateway can play in that slot. The server fetches the gateway's public model list, caches it (`MODEL_LIST_TTL_S`, default an hour) and serves it at `GET /api/models`. Without a key (mock mode), or if the list cannot be fetched, it offers a small built-in list: the roster's own models.
+
+The flag is enforced on the server, not just in the page. With it off, `/api/decide` and `/api/match/start` reject any model other than the slot's own roster model, whatever the browser sends. With it on, a picked model must be a well-formed `provider/model` id, appear on the gateway list, have a listed price, and cost no more than `MODEL_PICKER_MAX_USD_PER_CALL` (default $0.01) per call at a deliberately high token estimate. Anything else is refused. A picked model that is another roster model keeps that model's API and prompt; any other is asked through chat completions, like the Gemini baseline. Mock mode still simulates the roster. Matches with a picked model are logged with the real model id and are not recorded on the leaderboard. Spend is still guarded: locally by `CALL_BUDGET_USD`, on a hosted deployment by the daily ceiling below, and a picked model whose call reports no cost is counted at the high estimate rather than as free.
+
 ## Running in production (Vercel)
 
-This repo is the local game and proxy. The hosted lead-magnet deployment of the game is not part of this repo yet; if you deploy it yourself, keep these points in mind:
+The same repo deploys to Vercel as a hosted site. `public/` is served as static files, and `api/` holds one small serverless function per route (the logic is in `lib/hosted.js`), replacing what `server.js` does for the browser. `vercel.json` sets the output directory, sends `/logs/<name>` to the bundled examples and adds a few security headers. No build step and no dependencies. Local `npm start` is unaffected.
 
-- The AI Gateway key is read only on the server, from the `AI_GATEWAY_API_KEY` environment variable. On Vercel, set it as an encrypted project environment variable. Never expose it as a public or `NEXT_PUBLIC_` variable, and never send it to the browser: the page only ever talks to the proxy.
-- Locally, `npm run live` can read the key from a [pass](https://www.passwordstore.org/) entry named by `ARENA_PASS_ENTRY` instead of the environment.
-- Use a dedicated gateway key for the game, with a spend cap set on the gateway itself. That cap is the real limit.
-- `CALL_BUDGET` and `CALL_BUDGET_USD` are in-memory counters in the proxy process and reset whenever it restarts. On a serverless platform every cold start is a restart, so a public deployment needs a durable, shared counter (a database or key-value store) before these guards mean anything.
-- The leaderboard and match logs are written to local files, which a serverless function cannot keep; they need durable storage too.
+What the hosted API adds:
+
+- **The key stays on the server.** It is read only from the `AI_GATEWAY_API_KEY` environment variable. Set it as an encrypted project variable; never as a public or `NEXT_PUBLIC_` variable. The page only ever talks to the API.
+- **A durable store.** Serverless functions have no persistent disk, so the spend counter, rate limits, match tokens and leaderboard live in Redis over REST: create an Upstash Redis (or Vercel KV) store for the project, which sets `KV_REST_API_URL` and `KV_REST_API_TOKEN` (the `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` names work too). Without one on Vercel the API fails closed: Mock and Replay work, live matches are refused. Elsewhere (for example, running the handlers locally) it falls back to a JSON file, `data/hosted-store.json`.
+- **A daily spend ceiling.** £3 a day by default (`DAILY_SPEND_CEILING_GBP`), converted at `USD_PER_GBP` (default 1.30, the same fixed assumption as the autoplay runner, not an exchange-rate lookup), because the gateway reports costs in USD, the unit the local `CALL_BUDGET_USD` guard uses. The counter is shared by every instance and resets at midnight UTC. A new live match must fit whole: today's spend plus a high estimate of the match's cost (600 calls per fighter) must stay under the ceiling. Once it is reached, new matches and further calls are refused, and the page shows a friendly message saying live matches reopen tomorrow. A call with no reported cost, or one that timed out (and so may still have been billed), is counted at a high estimate. Concurrent calls already in flight can finish slightly over the ceiling.
+- **Match tokens and limits.** Every live match starts with `POST /api/match/start`, which checks the fighters and models, the rate limit and the ceiling, then issues a token that each `/api/decide` call must carry. A token lasts 15 minutes and allows at most 700 calls per fighter. Starting matches is limited per client address (`MATCH_RATE_LIMIT`, default 5 per `MATCH_RATE_WINDOW_S`, default 600 seconds). The address is only used hashed, in a key that expires with its window.
+- **Leaderboard.** Only a live match started on the site can be recorded, once, with its own fighters. Mock matches are not recorded there. Reset is disabled unless `ARENA_ADMIN_TOKEN` (at least 16 characters) is set and sent as a bearer token.
+- **Logs.** Finished match logs are not kept on the server; players can download them from the results screen. The Replay list offers the bundled examples.
+- **Intro.** The hosted site shows a short intro once per browser (`&splash=1` shows it anywhere), and every page has a small link to [inkie.ink](https://inkie.ink). There is no tracking or analytics.
+
+Still worth doing: use a dedicated gateway key for the site, with a spend cap set on the gateway itself. That cap is the real backstop; the ceiling here is a guard based on reported costs.
+
+### Environment variables
+
+| Variable | Where | Default | Purpose |
+|---|---|---|---|
+| `AI_GATEWAY_API_KEY` | both | none | Gateway key; server side only. Without it, Mock and Replay only. |
+| `AI_GATEWAY_BASE` | both | `https://ai-gateway.vercel.sh` | Gateway address. |
+| `CALL_TIMEOUT_MS` | both | 2000 | Per-call timeout. |
+| `ENABLE_MODEL_PICKER` | both | off | `1` turns the model picker on. |
+| `MODEL_PICKER_MAX_USD_PER_CALL` | both | 0.01 | Refuse picked models estimated above this per call. |
+| `MODEL_LIST_TTL_S` | both | 3600 | How long the gateway model list is cached. |
+| `PORT`, `CALL_BUDGET`, `CALL_BUDGET_USD`, `LEADERBOARD_FILE` | local | see above | Local proxy only (in-memory budgets reset on restart). |
+| `KV_REST_API_URL`, `KV_REST_API_TOKEN` | hosted | none | Durable store (or `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`). Required for live matches on Vercel. |
+| `DAILY_SPEND_CEILING_GBP` | hosted | 3 | Daily ceiling for live matches. |
+| `USD_PER_GBP` | hosted | 1.30 | Fixed conversion for the ceiling. |
+| `MATCH_RATE_LIMIT`, `MATCH_RATE_WINDOW_S` | hosted | 5, 600 | Live matches each address may start per window. |
+| `RATE_LIMIT_SALT` | hosted | built in | Salt for hashing addresses in rate-limit keys. |
+| `ARENA_ADMIN_TOKEN` | hosted | none | Enables leaderboard reset with this bearer token. |
+| `ARENA_STORE_FILE` | hosted, off Vercel | `data/hosted-store.json` | File store when no REST store is set. |
+
+Locally, `npm run live` can read the key from a [pass](https://www.passwordstore.org/) entry named by `ARENA_PASS_ENTRY` instead of the environment.
 
 ## What it measures, and what it does not
 
@@ -194,11 +227,12 @@ This repo is the local game and proxy. The hosted lead-magnet deployment of the 
 npm test
 ```
 
-The tests cover determinism (same seed and log give an identical state on every tick; a tampered log diverges; with and without the bot), scene bucketing and incoming fire (bullets, missile blasts, flame), the action lapse, request shapes and response parsing for each API, identical text for the full-prompt fighters, Laya's worst-case prompt staying under budget, the weapons and the weapon config, pickup density and respawn rate (none at density 0, never back at rate 0, symmetric per slot, deterministic replay, older logs without the fields), roster defaults and six-fighter matches, the space bar rules, the history scrub (rewind equals a full run, live state untouched), the leaderboard, the autoplay runner (roster rotation, spend forecasting and budget stops, replay verification before recording) and that the bundled example logs still verify. The autoplay tests run a proxy on port 8795 against a local fake gateway with a dummy key; no test calls a real model.
+The tests cover determinism (same seed and log give an identical state on every tick; a tampered log diverges; with and without the bot), scene bucketing and incoming fire (bullets, missile blasts, flame), the action lapse, request shapes and response parsing for each API, identical text for the full-prompt fighters, Laya's worst-case prompt staying under budget, the weapons and the weapon config, pickup density and respawn rate (none at density 0, never back at rate 0, symmetric per slot, deterministic replay, older logs without the fields), roster defaults and six-fighter matches, the space bar rules, the history scrub (rewind equals a full run, live state untouched), the leaderboard, the autoplay runner (roster rotation, spend forecasting and budget stops, replay verification before recording), that the bundled example logs still verify, and the hosted API: the daily spend ceiling and match reservation, conservative charging of unknown costs and timeouts, match tokens and the per-match call cap, the per-address start limit, the storage fallback (REST, file, and failing closed on Vercel without a store), the hosted leaderboard rules, and the model picker flag enforced on the server in both the hosted API and the local proxy. The autoplay tests run a proxy on port 8795, and the picker tests one on 8796, against a local fake gateway with a dummy key; no test calls a real model or a real store.
 
 ## Files
 
-- `server.js`: static server, gateway proxy, call budget, log and leaderboard storage.
+- `server.js`: static server, gateway proxy, call budget, log and leaderboard storage (local).
+- `api/`, `lib/hosted.js`, `vercel.json`: the hosted (Vercel) API; `lib/storage.js` (durable store), `lib/spend.js` (daily ceiling), `lib/models.js` (model picker), `lib/gateway.js` (one gateway call).
 - `adapters.js`: request and response handling for each API, and the prompt budget guard.
 - `public/shared.js`: roster, options, the full and compact prompt text.
 - `public/sim.js`: deterministic simulation, scene bucketing, hash, replay cursor.
