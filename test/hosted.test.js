@@ -13,9 +13,9 @@ import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createHosted, clientNetwork, PLAY_S } from '../lib/hosted.js';
+import { createHosted, clientNetwork, PLAY_S, IDLE_S } from '../lib/hosted.js';
 import { createStore, MemoryStore, RestStore, FileStore } from '../lib/storage.js';
-import { spendConfig, worstCallUsd, matchReserveUsd, PROMPT_CHAR_CAP } from '../lib/spend.js';
+import { spendConfig, worstCallUsd, matchReserveUsd, trancheUsd, callBound, PROMPT_CHAR_CAP, PICKER_SAFETY } from '../lib/spend.js';
 import { cleanScene, promptChars } from '../lib/scene.js';
 import { resolveFighter, parseCatalogue, validModelId } from '../lib/models.js';
 import { rosterById } from '../public/shared.js';
@@ -72,14 +72,14 @@ const decide = (api, matchToken, fighter = 'jev', extra = {}) => call(api, 'deci
 const committed = async (store) => Number(await store.get(`spend:usd:${DAY}`)) || 0;
 
 test('ceiling: concurrent starts reserve atomically, never past the ceiling; ending a match frees its budget', async () => {
-  const { api, store } = setup({ env: { DAILY_SPEND_CEILING_GBP: '1', USD_PER_GBP: '1.30', GLOBAL_MATCH_RATE_LIMIT: '100' } }); // $1.30
+  const { api, store } = setup({ env: { DAILY_SPEND_CEILING_GBP: '1', USD_PER_GBP: '1.30', GLOBAL_MATCH_RATE_LIMIT: '100', MAX_MATCH_SHARE: '1' } }); // $1.30
   assert.equal(spendConfig({ DAILY_SPEND_CEILING_GBP: '1', USD_PER_GBP: '1.30' }).usd, 1.3);
   const four = ['jev', 'luna', 'laya', 'scaledown'];
-  const reserve = matchReserveUsd(four.map((id) => rosterById[id]));
-  assert.ok(2 * reserve <= 1.3 && 3 * reserve > 1.3, `reserve ${reserve}`);
-  const rs = await Promise.all(Array.from({ length: 30 }, () => start(api, four)));
+  const tranche = trancheUsd(matchReserveUsd(four.map((id) => rosterById[id])));
+  const fit = Math.floor(1.3 / tranche);
+  const rs = await Promise.all(Array.from({ length: 40 }, () => start(api, four)));
   const ok = rs.filter((r) => r.status === 200);
-  assert.equal(ok.length, 2, 'exactly the matches that fit');
+  assert.equal(ok.length, fit, 'exactly the first tranches that fit');
   assert.ok(rs.filter((r) => r.status === 429).every((r) => r.body.busy), 'held by open matches: busy, not spent');
   assert.ok(await committed(store) <= 1.3 + 1e-9);
   assert.equal((await call(api, 'matchEnd', { body: { matchToken: ok[0].body.matchToken } })).body.closed, true);
@@ -88,31 +88,75 @@ test('ceiling: concurrent starts reserve atomically, never past the ceiling; end
   assert.ok(await committed(store) <= 1.3 + 1e-9);
 });
 
-test('ceiling: concurrent calls at the worst-case cost never take the day past the ceiling', async () => {
+test('ceiling: concurrent calls at the worst-case cost never take the day past the ceiling (tranches top up)', async () => {
   const gw = fakeGateway({ cost: 'worst' });
-  const { api, store, clock, gateway } = setup({ env: { DAILY_SPEND_CEILING_GBP: '0.5', USD_PER_GBP: '1.30' }, gateway: gw }); // $0.65
+  const { api, store, clock, gateway } = setup({ env: { DAILY_SPEND_CEILING_GBP: '0.5', USD_PER_GBP: '1.30', MAX_MATCH_SHARE: '1' }, gateway: gw }); // $0.65
   const roster = ['jev', 'luna'];
-  const toks = [];
-  for (let i = 0; i < 5; i++) { const r = await start(api, roster); if (r.status === 200) toks.push(r.body.matchToken); }
-  assert.equal(toks.length, 1, 'only one match fits $0.65');
+  const tok = (await start(api, roster)).body.matchToken;
   const sc = { jev: sceneIn(roster, 'jev'), luna: sceneIn(roster, 'luna') };
   let wave = 0, okCalls = 0;
   for (;;) {
-    const rs = await Promise.all(toks.flatMap((t) => Array.from({ length: 50 }, (_, i) => {
+    const rs = await Promise.all(Array.from({ length: 50 }, (_, i) => {
       const f = roster[i % 2];
-      return call(api, 'decide', { body: { matchToken: t, fighter: f, scene: sc[f] }, ip: `203.0.113.${(i % 200) + 1}` });
-    })));
+      return call(api, 'decide', { body: { matchToken: tok, fighter: f, scene: sc[f] }, ip: `203.0.113.${(i % 200) + 1}` });
+    }));
     const n = rs.filter((r) => r.status === 200).length;
     okCalls += n;
-    assert.ok(n <= 2 * toks.length, 'one call in flight per fighter');
+    assert.ok(n <= 2, 'one call in flight per fighter');
     clock.t += 100; wave++;
     if (!n || wave > 2000) break;
   }
   assert.equal(gateway.calls.length, okCalls);
-  const reserve = matchReserveUsd(roster.map((id) => rosterById[id]));
-  assert.ok(Math.abs(await committed(store) - reserve) < 1e-9, 'day holds exactly the reserve');
+  const full = matchReserveUsd(roster.map((id) => rosterById[id]));
+  assert.ok(Math.abs(await committed(store) - full) < 1e-9, 'day holds exactly the full budget, reached tranche by tranche');
   assert.ok(await committed(store) <= 0.65);
   assert.ok(okCalls >= 1190 && okCalls <= 1200, `calls ${okCalls}: 600 worst-case calls per fighter, pooled`);
+});
+
+test('ceiling: cost above the bound is charged to the match and the day at once, and the day stops at the ceiling', async () => {
+  const over = (url, o) => { const body = JSON.parse(o.body); const f = Object.values(rosterById).find((r) => r.model === body.model); return 2 * worstCallUsd(f); };
+  let billed = 0;
+  const gw = fakeGateway();
+  const fetcher = async (url, o) => { const c = over(url, o); billed += c; const r = await fakeGateway({ cost: c }).fetcher(url, o); gw.calls.push(1); return r; };
+  const { api, store, clock } = setup({ env: { DAILY_SPEND_CEILING_GBP: '0.5', USD_PER_GBP: '1.30', MAX_MATCH_SHARE: '1', GLOBAL_MATCH_RATE_LIMIT: '100' }, gateway: { ...gw, fetcher } }); // $0.65
+  const roster = ['jev', 'luna'];
+  const sc = { jev: sceneIn(roster, 'jev'), luna: sceneIn(roster, 'luna') };
+  const toks = [];
+  for (let i = 0; i < 3; i++) { const r = await start(api, roster); if (r.status === 200) toks.push(r.body.matchToken); }
+  let refusedForDay = false;
+  for (let wave = 0; wave < 3000; wave++) {
+    const rs = await Promise.all(toks.flatMap((t) => roster.map((f) => call(api, 'decide', { body: { matchToken: t, fighter: f, scene: sc[f] }, ip: freshIp() }))));
+    if (rs.some((r) => r.body.ceilingReached)) refusedForDay = true;
+    if (!rs.some((r) => r.status === 200)) break;
+    clock.t += 100;
+  }
+  assert.ok(refusedForDay, 'calls refused once the day total passes the ceiling');
+  const maxOne = 2 * worstCallUsd(rosterById.luna);
+  assert.equal(toks.length, 3);
+  assert.ok(billed <= 0.65 + toks.length * 2 * maxOne, `billed ${billed} against $0.65`);
+  assert.ok(await committed(store) >= billed - 1e-9, 'the day counter never runs below what was billed');
+  for (const t of toks) await call(api, 'matchEnd', { body: { matchToken: t } });
+  assert.ok(Math.abs(await committed(store) - billed) < 1e-9, 'after settling, the day holds exactly what was billed');
+});
+
+test('ceiling: a match closed while a call is reserving refuses that call and refunds everything', async () => {
+  const clock = { t: Date.UTC(2026, 10, 4, 12) };
+  const inner = durableMemory(() => clock.t);
+  let api, armed = null;
+  const racing = new Proxy(inner, { get(o, k) {
+    const v = o[k];
+    if (k === 'incrFloat') return async (key, by, ttl) => { const r = await v.call(o, key, by, ttl);
+      if (armed && key.endsWith(':spent') && by > 0) { const t = armed; armed = null; await call(api, 'matchEnd', { body: { matchToken: t } }); } return r; };
+    return typeof v === 'function' ? v.bind(o) : v;
+  } });
+  const s0 = setup({ store: racing, clock });
+  api = s0.api;
+  const s = await start(api);
+  armed = s.body.matchToken;
+  const r = await decide(api, s.body.matchToken);
+  assert.equal(r.status, 403); assert.equal(s0.gateway.calls.length, 0, 'no paid call slips past the close');
+  // the close saw the call's reservation and kept it (the safe direction: over by one call bound, never under)
+  assert.ok(Math.abs(await committed(inner) - worstCallUsd(rosterById.jev)) < 1e-12);
 });
 
 test('worst case: timeouts and unusable answers are charged at the capped worst case, not refunded', async () => {
@@ -195,6 +239,33 @@ test('leaderboard: records are rebuilt on the server from verified play, once pe
   assert.equal(lb.body.matches.length, 1);
 });
 
+test('leaderboard: latency, cost, errors and timeouts come from the server, not the page', async () => {
+  const { api, clock } = setup();
+  const { token, decisions } = await playMatch(api, clock, ['jev', 'laya'], { ip: '192.0.2.77' });
+  const forged = decisions.map((d) => ({ ...d, ms: d.f === 'laya' ? 99999 : 1, cost: d.f === 'laya' ? 1 : 0 }));
+  const stunFlood = [...forged, ...Array.from({ length: 50 }, (_, i) => ({ t: 10 + i, f: 'laya', a: null, err: 'timeout' }))];
+  const rec = (body) => call(api, 'record', { body, headers: { 'x-match-token': token }, ip: '192.0.2.77' });
+  const flooded = await rec({ decisions: stunFlood });
+  assert.equal(flooded.status, 400); assert.match(flooded.body.error, /stuns/);
+  const ok = await rec({ decisions: forged });
+  assert.equal(ok.status, 200);
+  for (const f of ok.body.record.fighters) {
+    assert.equal(f.meanMs, 0, 'server-observed latency (the fake gateway answers at once)');
+    assert.ok(f.cost < 0.01, 'server-observed cost'); assert.equal(f.timeouts, 0); assert.equal(f.errors, 0);
+  }
+});
+
+test('picker safety: a picked model is bounded at a multiple of its listed price, and other charges are refused', () => {
+  const cat = parseCatalogue({ data: [
+    { id: 'acme/search', type: 'language', pricing: { input: '0.0000001', output: '0.0000004', web_search: '0.005' } },
+    { id: 'acme/plain', type: 'language', pricing: { input: '0.0000001', output: '0.0000004', input_cache_read: '0.00000001' } },
+  ] });
+  assert.equal(cat.find((m) => m.id === 'acme/search').price, null);
+  const r = resolveFighter('jev', 'acme/plain', { enabled: true, models: cat });
+  assert.ok(r.ok);
+  assert.ok(Math.abs(callBound(r.fighter, true) - PICKER_SAFETY * worstCallUsd(r.fighter)) < 1e-15);
+});
+
 test('leaderboard: free text is stripped of markup; reset needs the admin token', async () => {
   const r = cleanRecord({ mode: 'live', winner: 'jev', note: '<img src=x onerror=alert(1)>', cfgSummary: '"><svg onload=alert(1)>', fighters: [{ id: 'jev' }, { id: 'laya' }] });
   assert.doesNotMatch(r.note + r.cfgSummary, /[<>"']/);
@@ -210,20 +281,43 @@ test('leaderboard: free text is stripped of markup; reset needs the admin token'
   assert.equal((await call(admin, 'reset', { body: { confirm: 'RESET' }, headers: { authorization: 'Bearer a-long-admin-token-123' } })).status, 200);
 });
 
-test('rate limits: one IPv6 /64 is one network; a site-wide limit backs it up', async () => {
+test('rate limits: one IPv6 /64 is one network; only successful starts count site-wide', async () => {
   assert.equal(clientNetwork({ headers: { 'x-real-ip': '2001:db8:0:1::abcd' } }), clientNetwork({ headers: { 'x-real-ip': '2001:0db8:0000:0001:ffff:1:2:3' } }));
   assert.notEqual(clientNetwork({ headers: { 'x-real-ip': '2001:db8:0:1::1' } }), clientNetwork({ headers: { 'x-real-ip': '2001:db8:0:2::1' } }));
   assert.equal(clientNetwork({ headers: { 'x-real-ip': '::ffff:192.0.2.1' } }), '192.0.2.1');
-  const { api, clock } = setup({ env: { MATCH_RATE_LIMIT: '5' } });
+  const { api } = setup({ env: { MATCH_RATE_LIMIT: '5' } });
   let ok = 0;
-  for (let i = 0; i < 20; i++) if ((await start(api, ['jev', 'laya'], { ip: `2001:db8::${i.toString(16)}` })).status === 200) ok++;
-  assert.equal(ok, 5);
+  for (let i = 0; i < 20; i++) {
+    const r = await start(api, ['jev', 'laya'], { ip: `2001:db8::${i.toString(16)}` });
+    if (r.status === 200) { ok++; await call(api, 'matchEnd', { body: { matchToken: r.body.matchToken } }); }
+  }
+  assert.equal(ok, 5, 'five per /64, however many addresses it rotates through');
   assert.equal((await start(api, ['jev', 'laya'], { ip: '2001:db8:0:1::1' })).status, 200, 'another /64');
-  clock.t += 600e3;
   const g = setup({ env: { GLOBAL_MATCH_RATE_LIMIT: '3' } }).api;
+  const noisy = [];
+  for (let i = 0; i < 10; i++) noisy.push((await start(g, ['jev', 'laya'], { ip: '192.0.2.50' })).status);
+  assert.equal(noisy.filter((c) => c === 200).length, 1, 'one open match for the noisy network');
   const codes = [];
-  for (let i = 0; i < 5; i++) codes.push((await start(g)).status);
-  assert.deepEqual(codes, [200, 200, 200, 429, 429]);
+  for (let i = 0; i < 4; i++) codes.push((await start(g)).status);
+  assert.deepEqual(codes, [200, 200, 429, 429], 'refused starts did not use up the site-wide limit');
+});
+
+test('lock-out: one open match per network, a cap on any one match, and idle matches release at once', async () => {
+  const { api, store, clock } = setup({ env: { GLOBAL_MATCH_RATE_LIMIT: '100' } });
+  const five = ['jev', 'luna', 'laya', 'scaledown', 'gemini'];
+  const first = await start(api, five, { ip: '192.0.2.9' });
+  assert.equal(first.status, 200);
+  const second = await start(api, five, { ip: '192.0.2.9' });
+  assert.equal(second.status, 429); assert.equal(second.body.oneAtATime, true);
+  const dear = setup({ env: { MAX_MATCH_SHARE: '0.1' } }).api;
+  const r = await start(dear, five);
+  assert.equal(r.status, 400); assert.match(r.body.error, /too expensive/);
+  const held = await committed(store);
+  assert.ok(held < trancheUsd(matchReserveUsd(five.map((id) => rosterById[id]))) + 1e-9, 'only a tranche is held up front');
+  clock.t += (IDLE_S + 1) * 1000;
+  assert.equal((await start(api, ['jev', 'laya'])).status, 200);
+  assert.ok(Math.abs(await committed(store) - trancheUsd(matchReserveUsd([rosterById.jev, rosterById.laya]))) < 1e-9, 'the idle match was released');
+  assert.equal((await start(api, five, { ip: '192.0.2.9' })).status, 200, 'and its network can play again');
 });
 
 test('throttles run before any store read: forged tokens and floods cost no KV commands', async () => {
@@ -248,13 +342,15 @@ test('throttles run before any store read: forged tokens and floods cost no KV c
 test('expired matches give their unused budget back at the next start; calls stop when play time is up', async () => {
   const { api, store, clock } = setup();
   const s = await start(api);
-  assert.ok(await committed(store) > 0);
+  assert.equal((await decide(api, s.body.matchToken)).status, 200);
   clock.t += (PLAY_S + 1) * 1000;
   assert.equal((await decide(api, s.body.matchToken)).status, 403);
   clock.t += 60e3;
-  const before = matchReserveUsd([rosterById.jev, rosterById.laya]);
+  const spentBefore = await committed(store);
   await start(api);
-  assert.ok(Math.abs(await committed(store) - before) < 1e-9, 'only the new match is held');
+  const tranche = trancheUsd(matchReserveUsd([rosterById.jev, rosterById.laya]));
+  assert.ok(spentBefore > 0);
+  assert.ok(Math.abs(await committed(store) - tranche - 0.00001) < 1e-9, 'day = new tranche + the one call actually spent');
 });
 
 test('storage: REST when KV env is set, file locally, and fail closed on Vercel with no store', async () => {
@@ -330,11 +426,11 @@ test('picker OFF (default): the server rejects any model but the slot\'s own, wh
 test('picker ON: valid priced models play; bad ids, unknown, unpriced and too-dear models are refused', async () => {
   const gw = fakeGateway({ cost: 0.0001 });
   const fetcher = async (url, o) => url.endsWith('/v1/models') ? { ok: true, json: async () => CATALOGUE } : gw.fetcher(url, o);
-  const { api } = setup({ env: { ENABLE_MODEL_PICKER: '1' }, gateway: { ...gw, fetcher } });
+  const { api } = setup({ env: { ENABLE_MODEL_PICKER: '1', MAX_MATCH_SHARE: '0.5' }, gateway: { ...gw, fetcher } });
   const models = (await call(api, 'models', { method: 'GET' })).body;
   assert.equal(models.enabled, true); assert.equal(models.source, 'gateway');
   assert.deepEqual(models.models.map((m) => m.id), ['acme/cheap-chat', 'acme/dear-chat']);
-  for (const [model, re] of [['https://evil.example/x', /invalid/], ['acme/missing', /unknown/], ['acme/no-price', /no listed price/], ['acme/dear-chat', /too expensive/]]) {
+  for (const [model, re] of [['https://evil.example/x', /invalid/], ['acme/missing', /unknown/], ['acme/no-price', /no listed per-token price/], ['acme/dear-chat', /too expensive/]]) {
     const r = await start(api, ['jev', 'laya'], { body: { models: { jev: model } } });
     assert.equal(r.status, 400, model); assert.match(r.body.error, re);
   }
