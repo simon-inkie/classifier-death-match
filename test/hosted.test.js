@@ -264,10 +264,18 @@ test('leaderboard: latency, cost, errors and timeouts come from the server, not 
 
 test('picker safety: a picked model is bounded at a multiple of its listed price, and other charges are refused', () => {
   const cat = parseCatalogue({ data: [
-    { id: 'acme/search', type: 'language', pricing: { input: '0.0000001', output: '0.0000004', web_search: '0.005' } },
+    { id: 'acme/per-request', type: 'language', pricing: { input: '0.0000001', output: '0.0000004', request: '0.005' } },
+    { id: 'acme/tiers', type: 'language', pricing: { input: '0.0000001', output: '0.0000004', input_tiers: [] } },
     { id: 'acme/plain', type: 'language', pricing: { input: '0.0000001', output: '0.0000004', input_cache_read: '0.00000001' } },
+    // the shape the gateway lists Anthropic models in: web search and fast mode are opt-in (never asked for),
+    // and the bound takes the dearest regional rate
+    { id: 'acme/regional', type: 'language', pricing: { input: '0.000002', output: '0.00001', input_cache_write: '0.0000025', web_search: '10',
+      fast: { input: '0.000008', output: '0.00004' }, regional: { eu: { input: '0.0000022', output: '0.000011', input_cache_write: '0.00000275' } } } },
+    { id: 'acme/bad-region', type: 'language', pricing: { input: '0.000002', output: '0.00001', regional: { eu: { input: '0.0000022', output: '0.000011', request: '1' } } } },
+    { id: 'acme/odd-region', type: 'language', pricing: { input: '0.000002', output: '0.00001', regional: 'eu' } },
   ] });
-  assert.equal(cat.find((m) => m.id === 'acme/search').price, null);
+  for (const id of ['acme/per-request', 'acme/tiers', 'acme/bad-region', 'acme/odd-region']) assert.equal(cat.find((m) => m.id === id).price, null, id);
+  assert.deepEqual(cat.find((m) => m.id === 'acme/regional').price, { in: 0.00000275, out: 0.000011 });
   const r = resolveFighter('jev', 'acme/plain', { enabled: true, models: cat });
   assert.ok(r.ok);
   assert.ok(Math.abs(callBound(r.fighter, true) - PICKER_SAFETY * worstCallUsd(r.fighter)) < 1e-15);
