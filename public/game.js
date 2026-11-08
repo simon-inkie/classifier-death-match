@@ -27,7 +27,7 @@ const params = new URLSearchParams(location.search);
 // Live falls back to Mock once the status is known (see refreshStatus).
 const firstMode = initialMode(params);
 let mode = firstMode.mode;
-// Default four: Jev, Luna, Laya, ScaleDown. Gemini (the fifth) and the scripted bot are tick-boxes,
+// Default four: Jev, Luna, Laya, ScaleDown. Gemini and the scripted bot are addable,
 // off by default (or ?gemini=1, ?bot=1).
 let enabled = new Set(DEFAULT_ROSTER);
 if (params.get('bot') === '1') enabled.add('bot');
@@ -81,7 +81,7 @@ function setStyle(st) {
   charStyle = st;
   safeStore.set('arenaStyle', st);
   document.body.classList.toggle('style-logos', st === 'logos');
-  for (const b of document.querySelectorAll('#styleGrp button, #setupStyles button')) b.classList.toggle('on', b.dataset.style === st);
+  for (const b of document.querySelectorAll('#styleGrp button')) b.classList.toggle('on', b.dataset.style === st);
 }
 const hitFlash = {}; // fighter id -> tick of last hit, for the white flash
 
@@ -111,16 +111,13 @@ function buildHeader() {
   $('modelAims').checked = Boolean(weaponCfg.modelAims);
   $('modelAims').onchange = (e) => {
     safeStore.set('arenaModelAims', e.target.checked);
-    if ($('setupModelAims')) $('setupModelAims').checked = e.target.checked;
     setWeaponCfg({ ...weaponCfg, modelAims: e.target.checked });
   };
   for (const b of document.querySelectorAll('#modes button, #setupModes button')) b.onclick = () => setMode(b.dataset.mode);
   renderFighters();
-  for (const b of document.querySelectorAll('#styleGrp button, #setupStyles button')) b.onclick = () => setStyle(b.dataset.style);
+  for (const b of document.querySelectorAll('#styleGrp button')) b.onclick = () => setStyle(b.dataset.style);
   setStyle(charStyle);
   buildSoundControls();
-  buildSetupModal();
-  $('setupBtn').onclick = openSetup;
   $('start').onclick = onSpace;
   $('restart').onclick = restart;
   $('warm').onclick = warmUp;
@@ -135,13 +132,12 @@ function buildHeader() {
   $('resDownload').onclick = () => downloadLog(lastLog);
   $('resClose').onclick = hideResults;
   $('resResetWins').onclick = () => { safeStore.set('arenaWins', {}); toast('Session wins reset'); };
-  const settingsUi = initSettings({ onOpen: () => {
+  const settingsUi = initSettings({ onStart: () => { if (!running) start(); }, onOpen: () => {
     if (running) toast('Fighter and gameplay changes apply from the next match');
     renderWeapons(); renderFighters();
     // which server this page talks to: the older local servers serve the same files with other settings
     $('serverInfo').textContent = `${location.host}, model picker ${serverStatus?.modelPicker ? 'on' : 'off'}`;
   } });
-  $('splashSettings').onclick = () => { $('splash').classList.remove('show'); settingsUi.open(); };
   $('wpnReset').onclick = () => { setWeaponCfg({ ...DEFAULT_WEAPON_CONFIG, modelAims: weaponCfg.modelAims }); renderWeapons(); };
   $('lbBtn').onclick = openLeaderboard;
   $('lbClose').onclick = () => $('lbModal').classList.remove('show');
@@ -150,17 +146,12 @@ function buildHeader() {
   $('lbScope').onchange = (e) => { lbCurrentOnly = e.target.value === 'current'; renderLeaderboard(); };
   $('lbReset').onclick = resetLeaderboard;
   $('noticeClose').onclick = () => notice(null);
-  $('splashGo').onclick = () => $('splash').classList.remove('show');
-  $('splashStart').onclick = () => { $('splash').classList.remove('show'); if (!running) start(); };
   $('setupSkip').checked = Boolean(safeStore.get(SKIP_KEY, false));
   $('setupSkip').onchange = (e) => safeStore.set(SKIP_KEY, e.target.checked);
   setWeaponCfg(weaponCfg);
   document.addEventListener('keydown', (e) => {
     if (anyModal()) { // a dialog is open: Escape closes it; Space on the setup modal starts the match
       if (e.key === 'Escape') anyModal().classList.remove('show');
-      if (e.code === 'Space' && $('splash').classList.contains('show') && !['INPUT', 'BUTTON', 'SELECT'].includes(e.target.tagName)) {
-        e.preventDefault(); $('splash').classList.remove('show'); if (!running) start();
-      }
       return;
     }
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
@@ -182,7 +173,7 @@ function buildHeader() {
   // a click anywhere skips the celebration (buttons run their own handler first: Start skips, Restart restarts)
   document.addEventListener('click', () => { if (celebrate) skipCelebration(); });
   setMode(mode);
-  if (showSetupOnLoad(params, safeStore)) openSetup();
+  if (showSetupOnLoad(params, safeStore)) settingsUi.open('fighters', true);
 }
 
 // ---------- Fighters tab: the line-up with Remove, and Add (roster fighters out of play, plus gateway
@@ -191,7 +182,7 @@ function setLineup(next) {
   if (!next) return;
   enabled.clear(); for (const id of next.enabled) enabled.add(id);
   pickedModels = next.picked; safeStore.set('arenaPicked', pickedModels);
-  syncSetupRoster(); // re-renders this tab too
+  syncSettings(); // re-renders this tab too
   if (!running && mode !== 'replay') preview();
 }
 function renderFighters() {
@@ -199,11 +190,18 @@ function renderFighters() {
   const pickerOn = Boolean(serverStatus?.modelPicker);
   const rows = fighterRows({ roster: ROSTER, enabled, picked: pickedModels, pickerOn });
   const add = addableOptions({ roster: ROSTER, enabled, picked: pickedModels, models: modelList, pickerOn, max: MAX_FIGHTERS });
+  // Status polls must not replace a focused control or close an open Add dropdown.
+  const signature = JSON.stringify({ rows, add, mode });
+  if (rg.dataset.lineup === signature) return;
+  rg.dataset.lineup = signature;
   const canRemove = enabled.size > MIN_FIGHTERS, canAdd = add.fighters.length + add.models.length > 0;
   const mockNote = pickerOn && mode !== 'live' ? '<span class="dim">mock and replay play the slot\'s own model</span>' : '';
-  rg.innerHTML = `<ul class="flist" aria-label="Fighters in play">${rows.map((f) => `<li class="frow" style="--c:${esc(f.colour)}">
-      <span class="fname">${esc(f.gateway ? f.model.split('/').pop() : f.bot ? 'Scripted bot' : f.name)}</span>
-      <span class="fmodel">${esc(f.gateway ? `${f.model} in the ${f.name} slot` : f.bot ? 'if/else control' : f.model)}${f.gateway ? ` ${mockNote}` : ''}</span>
+  rg.innerHTML = `<ul class="flist" aria-label="Fighters in play">${rows.map((f) => `<li class="setup-row" style="--c:${esc(f.colour)}" data-slot="${esc(f.slot)}">
+      <span class="setup-spr"></span>
+      <span class="setup-info"><span class="setup-top">
+        <span class="setup-name">${esc(f.gateway ? f.model.split('/').pop() : f.bot ? 'Scripted bot' : f.name)}</span>
+        <span class="setup-kind">${esc(f.gateway ? 'Gateway model' : kindLabel(rosterById[f.slot]))}</span>
+      </span><span class="setup-model">${esc(f.gateway ? `${f.model} in the ${f.name} slot` : f.bot ? 'if/else control' : f.model)}</span>${f.gateway ? mockNote : ''}</span>
       <button type="button" data-remove="${esc(f.slot)}" ${canRemove ? '' : 'disabled'} aria-label="Remove ${esc(f.gateway ? f.model : f.name)}">Remove</button></li>`).join('')}</ul>
     <div class="fadd">
       <button type="button" id="addBtn" ${canAdd ? '' : 'disabled'} aria-expanded="false" aria-controls="addSel">Add fighter</button>
@@ -213,6 +211,10 @@ function renderFighters() {
       </select>
       <span class="dim">${enabled.size} of ${MAX_FIGHTERS} fighters, at least ${MIN_FIGHTERS}.</span>
     </div>`;
+  for (const row of rg.querySelectorAll('[data-slot]')) {
+    const r = rosterById[row.dataset.slot];
+    row.querySelector('.setup-spr').appendChild(spriteElement(r.id, 34, r.colour));
+  }
   for (const b of rg.querySelectorAll('[data-remove]')) {
     b.onclick = () => {
       setLineup(applyRemove(b.dataset.remove, { enabled, picked: pickedModels }));
@@ -238,78 +240,21 @@ function kindLabel(r) {
   return 'Decision Classifier';
 }
 
-function buildSetupModal() {
-  const wrap = $('setupRoster');
-  if (!wrap) return;
-  wrap.innerHTML = '';
-  for (const r of ROSTER) {
-    const row = document.createElement('label');
-    row.className = `setup-row ${enabled.has(r.id) ? '' : 'off'}`;
-    row.style.setProperty('--c', r.colour);
-    row.dataset.id = r.id;
-    row.innerHTML = `
-      <input type="checkbox" data-id="${r.id}" ${enabled.has(r.id) ? 'checked' : ''}>
-      <span class="setup-spr"></span>
-      <span class="setup-info">
-        <span class="setup-top">
-          <span class="setup-name">${esc(r.name)}</span>
-          <span class="setup-kind">${esc(kindLabel(r))}</span>
-        </span>
-        <span class="setup-model">${esc(shownModel(r.id))}</span>
-      </span>`;
-    row.querySelector('.setup-spr').appendChild(spriteElement(r.id, 34, r.colour));
-    row.querySelector('input').onchange = (e) => {
-      if (e.target.checked && enabled.size >= MAX_FIGHTERS) {
-        e.target.checked = false;
-        toast(`At most ${MAX_FIGHTERS} fighters`);
-        return;
-      }
-      e.target.checked ? enabled.add(r.id) : enabled.delete(r.id);
-      syncSetupRoster();
-      if (!running) preview();
-    };
-    wrap.appendChild(row);
-  }
-  const aimChk = $('setupModelAims');
-  if (aimChk) {
-    aimChk.checked = Boolean(weaponCfg.modelAims);
-    aimChk.onchange = (e) => {
-      $('modelAims').checked = e.target.checked;
-      safeStore.set('arenaModelAims', e.target.checked);
-      setWeaponCfg({ ...weaponCfg, modelAims: e.target.checked });
-    };
-  }
-}
-
-function syncSetupRoster() {
-  for (const row of document.querySelectorAll('#setupRoster .setup-row')) {
-    const id = row.dataset.id;
-    const on = enabled.has(id);
-    row.classList.toggle('off', !on);
-    const chk = row.querySelector('input');
-    if (chk) chk.checked = on;
-    const m = row.querySelector('.setup-model');
-    if (m && rosterById[id]) m.textContent = shownModel(id);
-  }
+function syncSettings() {
   renderFighters();
-  if ($('setupModelAims')) $('setupModelAims').checked = Boolean(weaponCfg.modelAims);
   updateSetupLive();
 }
 
 // The modal's Live button and its note follow the server's status (no key, budget spent, server down).
 function updateSetupLive() {
   const live = document.querySelector('#setupModes button[data-mode="live"]');
+  $('serverInfo').textContent = `${location.host}, model picker ${serverStatus?.modelPicker ? 'on' : 'off'}`;
   if (!live || !statusKnown) return;
   const a = liveAvailability(serverStatus);
   live.disabled = !a.ok;
   live.title = a.note;
   $('setupLiveNote').textContent = a.note;
   $('setupLiveNote').style.display = a.note ? '' : 'none';
-}
-
-function openSetup() {
-  syncSetupRoster();
-  $('splash').classList.add('show');
 }
 
 // ---------- sound controls (presentation only; see audio.js)
@@ -358,7 +303,7 @@ async function refreshStatus() {
     k.className = `chip ${serverStatus.keyLoaded ? 'ok' : 'bad'}`;
     updateBudget(serverStatus.budget);
     applyHostedUi();
-    if (serverStatus.modelPicker) loadModelList(); else { modelList = []; syncSetupRoster(); }
+    if (serverStatus.modelPicker) loadModelList(); else { modelList = []; syncSettings(); }
   } catch {
     $('keyChip').textContent = 'PROXY DOWN'; $('keyChip').className = 'chip bad';
     serverStatus = null; statusKnown = true; settleFirstMode();
@@ -399,7 +344,7 @@ async function loadModelList() {
     modelList = j.enabled && Array.isArray(j.models) ? j.models : [];
   } catch { return; }
   for (const id of Object.keys(pickedModels)) if (!modelList.some((m) => m.id === pickedModels[id])) delete pickedModels[id];
-  syncSetupRoster();
+  syncSettings();
   if (!running && mode !== 'replay') preview();
 }
 function updateBudget(b) {

@@ -1,4 +1,4 @@
-// Settings modal: one button in the header opens a dialog with tabs (Fighters, Gameplay, Sound).
+// Shared first-run and Settings dialog, with Fighters, Gameplay and Sound tabs.
 // The controls inside keep the ids and wiring they had in the header (game.js), so moving them here
 // changes nothing about what they set. This file only adds the dialog behaviour: tabs with arrow keys,
 // Escape to close, focus kept inside while open and handed back to the button on close.
@@ -84,11 +84,11 @@ export function applyRemove(slot, { enabled, picked = {}, min = MIN_FIGHTERS }) 
 
 const FOCUSABLE ='button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
-export function initSettings({ onOpen = () => {} } = {}) {
+export function initSettings({ onOpen = () => {}, onStart = () => {} } = {}) {
   const $ = (id) => document.getElementById(id);
-  const modal = $('settingsModal'), btn = $('settingsBtn');
+  const modal = $('splash'), btn = $('settingsBtn');
   const tabs = [...modal.querySelectorAll('[role="tab"]')];
-  let opener = null;
+  let opener = null, firstRun = false;
 
   const select = (i, focus = false) => {
     tabs.forEach((t, j) => {
@@ -101,8 +101,12 @@ export function initSettings({ onOpen = () => {} } = {}) {
     if (focus) tabs[i].focus();
   };
   const focusables = () => [...modal.querySelectorAll(FOCUSABLE)]
-    .filter((el) => !el.disabled && el.offsetParent !== null && !el.closest('[hidden]'));
-  const open = (tab) => {
+    .filter((el) => !el.disabled && el.tabIndex >= 0 && el.offsetParent !== null && !el.closest('[hidden]'));
+  const open = (tab, intro = false) => {
+    firstRun = intro;
+    $('splashStart').hidden = !intro;
+    $('splashGo').hidden = !intro;
+    $('settingsClose').hidden = intro;
     opener = document.activeElement instanceof HTMLElement ? document.activeElement : btn;
     const i = tabs.findIndex((t) => t.dataset.tab === tab);
     if (i >= 0) select(i);
@@ -113,8 +117,10 @@ export function initSettings({ onOpen = () => {} } = {}) {
   const close = () => {
     if (!modal.classList.contains('show')) return;
     modal.classList.remove('show');
-    (opener && opener.isConnected && opener.offsetParent !== null ? opener : btn).focus(); // a hidden opener (the intro's button) cannot take focus
+    (opener && opener !== document.body && opener.isConnected && opener.offsetParent !== null ? opener : btn).focus();
   };
+
+  const start = () => { close(); onStart(); };
 
   tabs.forEach((t, i) => {
     t.onclick = () => select(i);
@@ -128,6 +134,9 @@ export function initSettings({ onOpen = () => {} } = {}) {
   // on the dialog itself, ahead of the page's own key handler on document
   modal.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); return; }
+    if (firstRun && e.code === 'Space' && (e.target.getAttribute('role') === 'tab' || !['INPUT', 'BUTTON', 'SELECT', 'A'].includes(e.target.tagName))) {
+      e.preventDefault(); e.stopPropagation(); start(); return;
+    }
     if (e.key !== 'Tab') return;
     const els = focusables();
     const j = trapIndex(els.indexOf(document.activeElement), els.length, e.shiftKey);
@@ -136,7 +145,8 @@ export function initSettings({ onOpen = () => {} } = {}) {
   modal.addEventListener('click', (e) => { if (e.target === modal) close(); }); // the backdrop
   btn.onclick = () => open();
   $('settingsClose').onclick = close;
-  $('setupBtn').addEventListener('click', close); // the intro opens in its own dialog
+  $('splashGo').onclick = close;
+  $('splashStart').onclick = start;
   select(0);
   return { open, close };
 }

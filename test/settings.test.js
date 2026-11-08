@@ -31,8 +31,8 @@ test('settings dialog: Tab wraps at the edges and pulls stray focus back in', ()
 
 test('settings markup: the header keeps play controls only; the settings sit in the modal with tab roles', () => {
   const header = section('<header>', '</header>');
-  const modal = section('<div id="settingsModal"', '<div id="lbModal"');
-  const settingIds = ['seed', 'modelAims', 'rosterGrp', 'styleGrp', 'wpnTable', 'wpnPickups', 'wpnReset', 'sndBtn', 'vol', 'musBtn', 'setupBtn'];
+  const modal = section('<div id="splash"', '<div id="lbModal"');
+  const settingIds = ['seed', 'modelAims', 'rosterGrp', 'styleGrp', 'wpnTable', 'wpnPickups', 'wpnReset', 'sndBtn', 'vol', 'musBtn', 'setupModes', 'setupSkip', 'splashStart', 'splashGo', 'settingsClose', 'serverInfo'];
   for (const id of settingIds) {
     assert.doesNotMatch(header, new RegExp(`id="${id}"`), `${id} is not in the header`);
     assert.match(modal, new RegExp(`id="${id}"`), `${id} is in the settings modal`);
@@ -46,7 +46,10 @@ test('settings markup: the header keeps play controls only; the settings sit in 
   for (const [, tab, panel] of tabs) {
     assert.match(modal, new RegExp(`role="tabpanel" id="${panel}" aria-labelledby="${tab}"`), `${panel} is labelled by ${tab}`);
   }
-  assert.doesNotMatch(html, /id="wpnModal"|id="wpnBtn"/, 'the separate weapons dialog is gone');
+  assert.doesNotMatch(html, /id="(?:wpnModal|wpnBtn|settingsModal|setupBtn|splashSettings|setupRoster|setupModelAims|setupStyles)"/, 'duplicate editing paths are gone');
+  assert.equal((html.match(/id="splash"/g) || []).length, 1);
+  const gameplay = section('id="panel-gameplay"', 'id="panel-sound"');
+  for (const id of ['setupModes', 'modelAims', 'styleGrp', 'seed']) assert.match(gameplay, new RegExp(`id="${id}"`));
 });
 
 import { fighterRows, addableOptions, applyAdd, applyRemove, MIN_FIGHTERS } from '../public/settings.js';

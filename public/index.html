@@ -133,7 +133,6 @@
   #wpnPickups .pk { margin: 4px 0; font-size: 12px; }
   #wpnPickups .pk > .dim { display: block; }
   #wpnTable td:first-child, #wpnTable th:first-child { text-align: center; }
-  #settingsModal .box { width: min(96vw, 720px); }
   .tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--line); margin: 6px 0 10px; flex-wrap: wrap; }
   .tabs [role=tab] { border-bottom: none; margin-bottom: -2px; padding: 5px 12px; }
   .tabs [role=tab][aria-selected=true] { background: var(--hot); color: #000; border-color: var(--hot); }
@@ -142,13 +141,9 @@
   .tabpanel .grp { flex-wrap: wrap; gap: 8px; }
   #rosterGrp, #liveGrp { flex-direction: column; align-items: stretch; }
   .flist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-  .frow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: #141422; border: 1.5px solid var(--line); border-left: 5px solid var(--c); padding: 5px 10px; }
-  .frow .fname { color: var(--c); font-weight: bold; letter-spacing: 1.5px; text-transform: uppercase; min-width: 100px; }
-  .frow .fmodel { flex: 1 1 160px; min-width: 0; color: var(--dim); font-size: 11px; overflow-wrap: anywhere; }
-  .frow button:disabled, .fadd button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .setup-row button:disabled, .fadd button:disabled { opacity: 0.4; cursor: not-allowed; }
   .fadd { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
   .fadd select { text-transform: none; max-width: 100%; flex: 1 1 220px; }
-  #liveGrp .row { display: flex; align-items: center; gap: 6px; }
   .tblwrap { overflow-x: auto; max-width: 100%; }
   .replay-note { display: none; margin-bottom: 6px; }
   body[data-mode=replay] .replay-note { display: block; }
@@ -159,27 +154,34 @@
   #splash .box { width: min(94vw, 540px); padding: 18px 22px; }
   #splash .sub { color: var(--dim); font-size: 11px; margin-bottom: 12px; line-height: 1.45; }
   #splash .by { color: var(--dim); font-size: 11px; letter-spacing: 2px; margin-bottom: 2px; }
-  .setup-more { font-size: 11px; color: var(--dim); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .setup-sec { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
-  .setup-lbl { font-size: 11px; color: var(--hot); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 6px; }
-  .setup-roster { display: flex; flex-direction: column; gap: 6px; }
-  .setup-row { display: flex; align-items: center; gap: 10px; background: #141422; border: 1.5px solid var(--line); border-left: 5px solid var(--c, var(--line)); padding: 6px 10px; cursor: pointer; }
+  .setup-row { display: flex; align-items: center; gap: 10px; background: #141422; border: 1.5px solid var(--line); border-left: 5px solid var(--c, var(--line)); padding: 6px 10px; }
   .setup-row:hover { border-color: var(--hot); }
-  .setup-row.off { opacity: 0.5; }
-  .setup-row input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--hot); cursor: pointer; margin: 0; }
   .setup-spr { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 50%; background: #0b0b12; flex-shrink: 0; }
   .setup-spr canvas.sprite, .setup-spr img.sprite { width: 34px; height: 34px; border-radius: 50%; display: block !important; }
   .setup-info { flex: 1; min-width: 0; }
-  .setup-top { display: flex; align-items: baseline; gap: 8px; }
+  .setup-top { display: flex; align-items: baseline; gap: 5px; flex-wrap: wrap; }
   .setup-name { font-size: 15px; font-weight: bold; letter-spacing: 1.5px; color: var(--c, var(--ink)); }
   .setup-kind { font-size: 9px; padding: 1px 5px; border: 1px solid var(--line); color: var(--dim); text-transform: uppercase; letter-spacing: 1px; margin-left: auto; }
-  .setup-model { font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 1px; }
+  .setup-model { font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; overflow-wrap: anywhere; margin-top: 1px; display: block; }
   .setup-grid { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 8px 10px; font-size: 12px; }
   .setup-grid .k { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
   .setup-opts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .setup-opts button:disabled { opacity: 0.4; cursor: not-allowed; }
   .setup-note { grid-column: 2; font-size: 11px; color: var(--hot); line-height: 1.4; }
   .setup-skip { display: block; margin-top: 10px; font-size: 11px; color: var(--dim); }
+  [hidden] { display: none !important; }
+  #serverInfo { margin-top: 8px; overflow-wrap: anywhere; }
+  #splash h2 { overflow-wrap: anywhere; }
+  @media (max-width: 480px) {
+    #splash .box { padding: 14px 12px; }
+    #splash h2 { font-size: 20px; letter-spacing: 2px; }
+    .setup-row { gap: 6px; padding: 6px; flex-wrap: wrap; }
+    .setup-info { flex-basis: calc(100% - 48px); }
+    .setup-row button { margin-left: auto; }
+    .setup-kind { margin-left: 0; letter-spacing: 0; }
+    .setup-grid { grid-template-columns: 1fr; }
+    .setup-note { grid-column: 1; }
+  }
   a { color: var(--hot); }
   #madeBy { position: fixed; right: 10px; bottom: 6px; z-index: 30; font-size: 10px; letter-spacing: 1px; color: var(--dim); text-decoration: none; opacity: 0.8; }
   #madeBy:hover, #madeBy:focus-visible { color: var(--hot); opacity: 1; }
@@ -204,7 +206,7 @@
     SPEED <select id="speed"><option>1</option><option>2</option><option>4</option><option>8</option></select>
   </div>
   <div class="grp">
-    <button id="settingsBtn" type="button" aria-haspopup="dialog" aria-controls="settingsModal" title="Fighters, gameplay and sound">Settings</button>
+    <button id="settingsBtn" type="button" aria-haspopup="dialog" aria-controls="splash" title="Fighters, gameplay and sound">Settings</button>
     <button id="start" class="go">Start [space]</button>
     <button id="restart" title="Restart this match from the beginning (same seed and fighters)">Restart</button>
     <span id="pauseChip" class="chip">PAUSED</span>
@@ -239,8 +241,10 @@
     <button id="resResetWins">Reset session wins</button>
   </div>
 </div></div>
-<div id="settingsModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle"><div class="box">
-  <h2 id="settingsTitle">SETTINGS</h2>
+<div id="splash" class="modal" role="dialog" aria-modal="true" aria-labelledby="splashTitle"><div class="box">
+  <div class="by">INKIE PRESENTS</div>
+  <h2 id="splashTitle">CLASSIFIER DEATH MATCH</h2>
+  <div class="sub">AI models steer fighters round an arena: every turn each gets the scene and picks 1 of 8 moves, and faster models get more turns. Last one standing wins.</div>
   <div class="tabs" role="tablist" aria-label="Settings">
     <button type="button" role="tab" id="tab-fighters" data-tab="fighters" aria-controls="panel-fighters">Fighters</button>
     <button type="button" role="tab" id="tab-gameplay" data-tab="gameplay" aria-controls="panel-gameplay">Gameplay</button>
@@ -249,14 +253,22 @@
   <div class="tabpanel" role="tabpanel" id="panel-fighters" aria-labelledby="tab-fighters" tabindex="0">
     <div class="dim replay-note">Replay plays the fighters and models saved in its log.</div>
     <div class="grp" id="rosterGrp"></div>
+  </div>
+  <div class="tabpanel" role="tabpanel" id="panel-gameplay" aria-labelledby="tab-gameplay" tabindex="0" hidden>
+    <div class="dim replay-note">Replay plays the seed and settings saved in its log.</div>
+    <div class="setup-grid">
+      <div class="k">Mode</div>
+      <div class="setup-opts" id="setupModes">
+        <button type="button" data-mode="live">Live (real models)</button>
+        <button type="button" data-mode="mock">Mock (free, offline)</button>
+      </div>
+      <div class="setup-note" id="setupLiveNote" style="display:none"></div>
+    </div>
     <h3>CHARACTER STYLE</h3>
     <div class="grp" id="styleGrp" title="Character style (key L)">
       <button type="button" data-style="classic">Classic</button>
       <button type="button" data-style="logos">Logos [L]</button>
     </div>
-  </div>
-  <div class="tabpanel" role="tabpanel" id="panel-gameplay" aria-labelledby="tab-gameplay" tabindex="0" hidden>
-    <div class="dim replay-note">Replay plays the seed and settings saved in its log.</div>
     <div class="grp" id="liveGrp">
       <div class="row"><label for="seed">SEED</label> <input id="seed" type="number" value="1"></div>
       <label class="chk"><input type="checkbox" id="modelAims"> Model aims (chooses who to shoot)</label>
@@ -277,11 +289,14 @@
     </div>
     <div class="dim">Keys work during a match: M sound on or off, N music on or off.</div>
   </div>
-  <div class="btns">
-    <button type="button" id="setupBtn" title="Open the first-run setup walkthrough">Intro</button>
-    <span class="dim" id="serverInfo"></span>
-    <button type="button" id="settingsClose" class="go" style="margin-left:auto">Done</button>
+  <div class="btns" style="margin-top:14px">
+    <button id="splashStart" class="go" type="button">Start match [Space]</button>
+    <button id="splashGo" type="button">Look around first</button>
+    <button id="settingsClose" class="go" type="button" hidden>Done</button>
+    <a href="https://inkie.ink" target="_blank" rel="noopener" style="margin-left:auto">Made by Inkie</a>
   </div>
+  <label class="chk setup-skip"><input type="checkbox" id="setupSkip"> Do not show this again (open Settings any time)</label>
+  <div class="dim" id="serverInfo" role="status"></div>
 </div></div>
 <div id="lbModal" class="modal"><div class="box">
   <h2>LEADERBOARD</h2>
@@ -296,42 +311,6 @@
   </div>
 </div></div>
 <div id="notice" role="status"><span id="noticeText"></span><button id="noticeClose" type="button" aria-label="Dismiss">OK</button></div>
-<div id="splash" class="modal" role="dialog" aria-labelledby="splashTitle"><div class="box">
-  <div class="by">INKIE PRESENTS</div>
-  <h2 id="splashTitle">CLASSIFIER DEATH MATCH</h2>
-  <div class="sub">AI models steer fighters round an arena: every turn each gets the scene and picks 1 of 8 moves, and faster models get more turns. Last one standing wins.</div>
-  <div class="setup-more">Weapons, pickups, seed and sound live in Settings. <button id="splashSettings" type="button">All settings</button></div>
-  <div class="setup-sec">
-    <div class="setup-lbl">1. Fighters (tick up to 6)</div>
-    <div class="setup-roster" id="setupRoster"></div>
-  </div>
-  <div class="setup-sec">
-    <div class="setup-lbl">2. Match settings</div>
-    <div class="setup-grid">
-      <div class="k">Mode</div>
-      <div class="setup-opts" id="setupModes">
-        <button type="button" data-mode="live">Live (real models)</button>
-        <button type="button" data-mode="mock">Mock (free, offline)</button>
-      </div>
-      <div class="setup-note" id="setupLiveNote" style="display:none"></div>
-      <div class="k">Targeting</div>
-      <div class="setup-opts">
-        <label class="chk"><input type="checkbox" id="setupModelAims"> Model aims (chooses who to shoot)</label>
-      </div>
-      <div class="k">Sprites</div>
-      <div class="setup-opts" id="setupStyles">
-        <button type="button" data-style="logos">Logos [L]</button>
-        <button type="button" data-style="classic">Classic discs</button>
-      </div>
-    </div>
-  </div>
-  <div class="btns" style="margin-top:14px">
-    <button id="splashStart" class="go" type="button">Start Match [Space]</button>
-    <button id="splashGo" type="button">Look around first</button>
-    <a href="https://inkie.ink" target="_blank" rel="noopener" style="margin-left:auto">Made by Inkie</a>
-  </div>
-  <label class="chk setup-skip"><input type="checkbox" id="setupSkip"> Do not show this again (Settings in the top bar has everything; its Intro button reopens this)</label>
-</div></div>
 <a id="madeBy" href="https://inkie.ink" target="_blank" rel="noopener">MADE BY INKIE</a>
 <div id="toast"></div>
 <script type="module" src="game.js"></script>
