@@ -7,8 +7,9 @@ import { botDecide, mockDecide, mockLatency, rosterEntry } from './brain.js';
 import { spriteCanvases, spriteElement, spriteDataUrl } from './sprites.js';
 import * as audio from './audio.js';
 import { SKIP_KEY, showSetupOnLoad, initialMode, liveAvailability, settleMode } from './setup.js';
+import { initSettings } from './settings.js';
 import { WEAPON_NAMES, WEAPON_PARAMS, WEAPONS as WEAPON_DEFAULTS, DEFAULT_WEAPON_CONFIG, paramBounds, normaliseWeapons,
-  configId, configSummary, enabledWeapons, PICKUP_PARAMS, DEFAULT_PICKUPS } from './weapons.js';
+  configId, configSummary, PICKUP_PARAMS, DEFAULT_PICKUPS } from './weapons.js';
 import { buildRecord, aggregate, filterRecords, sortStandings, mostKillsIds, celebrationText } from './leaderboard.js';
 import { estCost } from './cost.js';
 import { DecisionHistory, Seeker, statsAt, DOM_ROW_CAP } from './history.js';
@@ -96,8 +97,7 @@ else delete weaponCfg.modelAims;
 function setWeaponCfg(c) {
   weaponCfg = normaliseWeapons(c);
   safeStore.set('arenaWeapons', weaponCfg);
-  $('wpnBtn').title = `Weapons: ${configSummary(weaponCfg)}`;
-  $('wpnBtn').textContent = `Weapons (${enabledWeapons(weaponCfg).length})`;
+  $('wpnSummary').textContent = `Active: ${configSummary(weaponCfg)}  (config ${configId(weaponCfg)})`;
   if (!running && mode !== 'replay') preview();
 }
 // Leaderboard: mock matches are neither shown nor recorded unless this is ticked (off on every load;
@@ -106,7 +106,7 @@ let lbIncludeMock = params.get('lbmock') === '1';
 let lbCurrentOnly = false;
 const anyModal = () => document.querySelector('.modal.show');
 
-// ---------- header controls
+// ---------- header and settings controls (the settings live in the Settings modal, same ids and wiring)
 function buildHeader() {
   $('modelAims').checked = Boolean(weaponCfg.modelAims);
   $('modelAims').onchange = (e) => {
@@ -127,7 +127,9 @@ function buildHeader() {
       syncSetupRoster();
       if (!running) preview();
     };
-    rg.appendChild(l);
+    const row = document.createElement('div'); row.className = 'rrow'; row.style.color = r.colour;
+    row.appendChild(l); // the slot's model picker goes after the label, in this row
+    rg.appendChild(row);
   }
   for (const b of document.querySelectorAll('#styleGrp button, #setupStyles button')) b.onclick = () => setStyle(b.dataset.style);
   setStyle(charStyle);
@@ -148,8 +150,7 @@ function buildHeader() {
   $('resDownload').onclick = () => downloadLog(lastLog);
   $('resClose').onclick = hideResults;
   $('resResetWins').onclick = () => { safeStore.set('arenaWins', {}); toast('Session wins reset'); };
-  $('wpnBtn').onclick = openWeapons;
-  $('wpnClose').onclick = () => $('wpnModal').classList.remove('show');
+  initSettings({ onOpen: () => { if (running) toast('Fighter and gameplay changes apply from the next match'); renderWeapons(); } });
   $('wpnReset').onclick = () => { setWeaponCfg({ ...DEFAULT_WEAPON_CONFIG, modelAims: weaponCfg.modelAims }); renderWeapons(); };
   $('lbBtn').onclick = openLeaderboard;
   $('lbClose').onclick = () => $('lbModal').classList.remove('show');
@@ -299,6 +300,7 @@ function buildSoundControls() {
 function setMode(m) {
   if (running) stop();
   mode = m;
+  document.body.dataset.mode = m; // the settings tabs say a replay uses its log's fighters and settings
   for (const b of document.querySelectorAll('#modes button, #setupModes button')) b.classList.toggle('on', b.dataset.mode === m);
   $('replayGrp').style.display = m === 'replay' ? 'flex' : 'none';
   $('liveGrp').style.display = m === 'replay' ? 'none' : 'flex';
@@ -1376,11 +1378,6 @@ function drawFlames(match) {
 
 // ---------- Weapons dialog
 const PARAM_COLS = [['dmg'], ['cd'], ['life', 'range'], ['ammo'], ['pellets', 'blast', 'burst']];
-function openWeapons() {
-  if (running) toast('Changes apply from the next match');
-  renderWeapons();
-  $('wpnModal').classList.add('show');
-}
 function renderWeapons() {
   const head = '<tr><th>On</th><th>Weapon</th><th>Damage</th><th>Cooldown (ticks)</th><th>Bullet life / range</th><th>Ammo</th><th>Extra</th></tr>';
   const rows = WEAPON_NAMES.map((w) => {

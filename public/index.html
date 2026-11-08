@@ -128,12 +128,26 @@
   .lbBadge { background: var(--hot); color: #000; font-size: 9px; padding: 0 4px; margin-left: 4px; letter-spacing: 1px; text-transform: uppercase; }
   #lbTable td.lbTop { color: var(--hot); font-weight: bold; }
   .modal .bad { color: var(--bad); }
-  .modal input[type=number] { width: 58px; text-transform: none; }
+  .modal input[type=number] { width: 66px; text-transform: none; }
   #wpnTable tr.off td { opacity: 0.5; }
   #wpnPickups .pk { margin: 4px 0; font-size: 12px; }
   #wpnPickups .pk > .dim { display: block; }
   #wpnTable td:first-child, #wpnTable th:first-child { text-align: center; }
   select.mpick { max-width: 150px; text-transform: none; font-size: 10px; padding: 2px 4px; }
+  #settingsModal .box { width: min(96vw, 720px); }
+  .tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--line); margin: 6px 0 10px; flex-wrap: wrap; }
+  .tabs [role=tab] { border-bottom: none; margin-bottom: -2px; padding: 5px 12px; }
+  .tabs [role=tab][aria-selected=true] { background: var(--hot); color: #000; border-color: var(--hot); }
+  .tabs [role=tab]:focus-visible, .tabpanel:focus-visible { outline: 2px solid var(--hot); outline-offset: 2px; }
+  .tabpanel { min-height: 160px; }
+  .tabpanel .grp { flex-wrap: wrap; gap: 8px; }
+  #rosterGrp, #liveGrp { flex-direction: column; align-items: stretch; }
+  #rosterGrp .rrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border-left: 4px solid currentColor; padding: 2px 8px; background: #141422; }
+  #rosterGrp .rrow select.mpick { max-width: 100%; flex: 1 1 180px; font-size: 11px; }
+  #liveGrp .row { display: flex; align-items: center; gap: 6px; }
+  .tblwrap { overflow-x: auto; max-width: 100%; }
+  .replay-note { display: none; margin-bottom: 6px; }
+  body[data-mode=replay] .replay-note { display: block; }
   #notice { display: none; position: fixed; top: 52px; left: 50%; transform: translateX(-50%); z-index: 42; max-width: min(92vw, 560px);
     background: #1a1408; border: 2px solid var(--hot); color: var(--ink); padding: 8px 12px; font-size: 12px; align-items: center; gap: 10px; }
   #notice.show { display: flex; }
@@ -180,30 +194,19 @@
     <button data-mode="live">Live</button>
     <button data-mode="replay">Replay</button>
   </div>
-  <div class="grp" id="liveGrp">SEED <input id="seed" type="number" value="1"> <label class="chk"><input type="checkbox" id="modelAims"> Model aims</label> <button id="wpnBtn" title="Which weapons spawn, and their numbers">Weapons</button></div>
-  <div class="grp" id="rosterGrp"></div>
-  <div class="grp" id="styleGrp" title="Character style (key L)">STYLE
-    <button data-style="classic">Classic</button>
-    <button data-style="logos">Logos [L]</button>
-  </div>
   <div class="grp" id="replayGrp">
     <select id="logList"></select>
     <input id="logFile" type="file" accept=".json" style="width:170px">
     SPEED <select id="speed"><option>1</option><option>2</option><option>4</option><option>8</option></select>
   </div>
   <div class="grp">
-    <button id="setupBtn" title="Open match setup modal">Setup</button>
+    <button id="settingsBtn" type="button" aria-haspopup="dialog" aria-controls="settingsModal" title="Fighters, gameplay and sound">Settings</button>
     <button id="start" class="go">Start [space]</button>
     <button id="restart" title="Restart this match from the beginning (same seed and fighters)">Restart</button>
     <span id="pauseChip" class="chip">PAUSED</span>
     <button id="warm" title="3 throwaway calls per model to warm TLS and cold starts">Warm up</button>
   </div>
-  <div class="grp" id="soundGrp" title="Sound on/off (key M), volume, music on/off (key N)">
-    <button id="sndBtn">Sound [M]</button>
-    <input id="vol" type="range" min="0" max="100" step="1" aria-label="Volume">
-    <button id="musBtn">Music [N]</button>
-    <span id="sndHint" class="chip">click to enable sound</span>
-  </div>
+  <span id="sndHint" class="chip">click to enable sound</span>
   <div class="grp"><button id="lbBtn" title="All-time leaderboard">Leaderboard</button></div>
   <div class="grp"><span id="keyChip" class="chip">KEY ?</span><span id="budgetChip" class="chip">CALLS 0/0</span></div>
   <span id="ringmsg"></span>
@@ -232,16 +235,47 @@
     <button id="resResetWins">Reset session wins</button>
   </div>
 </div></div>
-<div id="wpnModal" class="modal"><div class="box">
-  <h2>WEAPONS</h2>
-  <div class="dim">Untick to stop a weapon spawning. Defaults in brackets. Pickup settings are below the table. The rules text every model gets follows these. Applies from the next match.</div>
-  <table id="wpnTable"></table>
-  <h3>PICKUPS</h3>
-  <div id="wpnPickups"></div>
-  <div class="dim" id="wpnSummary"></div>
+<div id="settingsModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle"><div class="box">
+  <h2 id="settingsTitle">SETTINGS</h2>
+  <div class="tabs" role="tablist" aria-label="Settings">
+    <button type="button" role="tab" id="tab-fighters" data-tab="fighters" aria-controls="panel-fighters">Fighters</button>
+    <button type="button" role="tab" id="tab-gameplay" data-tab="gameplay" aria-controls="panel-gameplay">Gameplay</button>
+    <button type="button" role="tab" id="tab-sound" data-tab="sound" aria-controls="panel-sound">Sound</button>
+  </div>
+  <div class="tabpanel" role="tabpanel" id="panel-fighters" aria-labelledby="tab-fighters" tabindex="0">
+    <div class="dim replay-note">Replay plays the fighters and models saved in its log.</div>
+    <div class="grp" id="rosterGrp"></div>
+    <h3>CHARACTER STYLE</h3>
+    <div class="grp" id="styleGrp" title="Character style (key L)">
+      <button type="button" data-style="classic">Classic</button>
+      <button type="button" data-style="logos">Logos [L]</button>
+    </div>
+  </div>
+  <div class="tabpanel" role="tabpanel" id="panel-gameplay" aria-labelledby="tab-gameplay" tabindex="0" hidden>
+    <div class="dim replay-note">Replay plays the seed and settings saved in its log.</div>
+    <div class="grp" id="liveGrp">
+      <div class="row"><label for="seed">SEED</label> <input id="seed" type="number" value="1"></div>
+      <label class="chk"><input type="checkbox" id="modelAims"> Model aims (chooses who to shoot)</label>
+      <h3>WEAPONS</h3>
+      <div class="dim">Untick to stop a weapon spawning. Defaults in brackets. The rules text every model gets follows these. Applies from the next match.</div>
+      <div class="tblwrap"><table id="wpnTable"></table></div>
+      <h3>PICKUPS</h3>
+      <div id="wpnPickups"></div>
+      <div class="dim" id="wpnSummary"></div>
+      <div><button type="button" id="wpnReset">Reset weapons and pickups to defaults</button></div>
+    </div>
+  </div>
+  <div class="tabpanel" role="tabpanel" id="panel-sound" aria-labelledby="tab-sound" tabindex="0" hidden>
+    <div class="grp" id="soundGrp">
+      <button type="button" id="sndBtn">Sound [M]</button>
+      <label for="vol">VOLUME</label> <input id="vol" type="range" min="0" max="100" step="1">
+      <button type="button" id="musBtn">Music [N]</button>
+    </div>
+    <div class="dim">Keys work during a match: M sound on or off, N music on or off.</div>
+  </div>
   <div class="btns">
-    <button id="wpnReset">Reset to defaults</button>
-    <button id="wpnClose" class="go">Done</button>
+    <button type="button" id="setupBtn" title="Open the first-run setup walkthrough">Intro</button>
+    <button type="button" id="settingsClose" class="go" style="margin-left:auto">Done</button>
   </div>
 </div></div>
 <div id="lbModal" class="modal"><div class="box">
@@ -290,7 +324,7 @@
     <button id="splashGo" type="button">Look around first</button>
     <a href="https://inkie.ink" target="_blank" rel="noopener" style="margin-left:auto">Made by Inkie</a>
   </div>
-  <label class="chk setup-skip"><input type="checkbox" id="setupSkip"> Do not show this again (the Setup button opens it)</label>
+  <label class="chk setup-skip"><input type="checkbox" id="setupSkip"> Do not show this again (Settings, then Intro, opens it)</label>
 </div></div>
 <a id="madeBy" href="https://inkie.ink" target="_blank" rel="noopener">MADE BY INKIE</a>
 <div id="toast"></div>

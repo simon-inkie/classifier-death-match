@@ -96,9 +96,11 @@ This is a limitation of the model, not a tuning choice, and it is shown openly: 
 
 ## Playing
 
-On first load a setup panel walks you through a match: the fighters (with their logos and models, and the model picker when the server has it on), **Live** or **Mock**, whether models aim, and the character style. It defaults to Live and logos; if Live cannot run (no key, today's budget spent, or no server) it says why and starts in Mock. Tick **Do not show this again** to skip it; the **Setup** button opens it any time, and `&nosplash=1` or `&splash=1` hides or forces it for one load. Everything it sets is the same setting as the header controls, so the two always agree.
+On first load a setup panel walks you through a match: the fighters (with their logos and models, and the model picker when the server has it on), **Live** or **Mock**, whether models aim, and the character style. It defaults to Live and logos; if Live cannot run (no key, today's budget spent, or no server) it says why and starts in Mock. Tick **Do not show this again** to skip it; **Settings**, then **Intro**, opens it any time, and `&nosplash=1` or `&splash=1` hides or forces it for one load. Everything it sets is the same setting as in **Settings**, so the two always agree.
 
-In the page, pick **Mock**, **Live** or **Replay**, tick the fighters you want, and press **Start** or the space bar. The default line-up is the four classifiers. **Gemini** and the **Scripted bot (control)** are tick-boxes, off by default (or `&gemini=1`, `&bot=1` in the URL). Up to six fighters.
+The top bar keeps only what you need to play: the mode, the replay picker and speed, **Settings**, **Start**, **Restart**, **Warm up**, **Leaderboard**, the status chips and the clock. **Settings** opens a dialog with three tabs: **Fighters** (who plays, each slot's model when the picker is on, and the character style), **Gameplay** (seed, model aims, weapons and pickups) and **Sound** (sound, volume, music). Arrow keys move between tabs, Escape closes it.
+
+In the page, pick **Mock**, **Live** or **Replay**, tick the fighters you want under **Settings**, and press **Start** or the space bar. The default line-up is the four classifiers. **Gemini** and the **Scripted bot (control)** are tick-boxes, off by default (or `&gemini=1`, `&bot=1` in the URL). Up to six fighters.
 
 - Each fighter asks again as soon as its last answer lands, at most 10 times a second. While a call is pending it keeps its last action for 300 ms, then stands still. A ring fills under it while it waits. After 2 s with no answer, or on an error, it is stunned (red `!`) until its next good answer. Latency is the only handicap.
 - **Character style**: **Logos** (a 16x16 pixel sprite per fighter inside a team-coloured ring, the default) or **Classic** (coloured discs). Toggle with the STYLE buttons or `L`; `&style=logos` forces it for one load.
@@ -119,9 +121,9 @@ The setting is fixed at Start, included in the match config/id and saved as `mod
 - `r` replays the last match (results screen), `l` switches character style, `m` sound, `n` music.
 - `&autostart=1` starts a mock or replay match on load (kiosk demos, headless screenshots).
 
-### Weapons dialog
+### Weapons
 
-**Weapons** (next to the seed) opens a dialog with a tick-box per weapon, then damage, cooldown (ticks), bullet life (or range for the flamethrower), ammo, and one extra where it makes sense (shotgun pellets, missile blast radius, flamethrower burst length). Defaults are shown in brackets and **Reset to defaults** restores them. The pistol is always on, as the fallback. The flamethrower is off by default. Values are clamped to sane limits and the choice is remembered in this browser.
+The **Gameplay** tab of **Settings** has a tick-box per weapon, then damage, cooldown (ticks), bullet life (or range for the flamethrower), ammo, and one extra where it makes sense (shotgun pellets, missile blast radius, flamethrower burst length). Defaults are shown in brackets and **Reset weapons and pickups to defaults** restores them. The pistol is always on, as the fallback. The flamethrower is off by default. Values are clamped to sane limits and the choice is remembered in this browser.
 
 Below the table are two pickup settings, saved with the weapons:
 
@@ -172,7 +174,7 @@ Logs recorded before the rifle was moved to its off-centre spots, or before the 
 
 ## Model picker (optional, off by default)
 
-Set `ENABLE_MODEL_PICKER=1` and a model drop-down appears next to each fighter's tick-box: any language model on the Vercel AI Gateway can play in that slot. The server fetches the gateway's public model list, caches it (`MODEL_LIST_TTL_S`, default an hour) and serves it at `GET /api/models`. Without a key (mock mode), or if the list cannot be fetched, it offers a small built-in list: the roster's own models.
+Set `ENABLE_MODEL_PICKER=1` and a model drop-down appears next to each fighter's tick-box (in **Settings**, **Fighters**, and in the setup panel): any language model on the Vercel AI Gateway can play in that slot. The server fetches the gateway's public model list, caches it (`MODEL_LIST_TTL_S`, default an hour) and serves it at `GET /api/models`. Without a key (mock mode), or if the list cannot be fetched, it offers a small built-in list: the roster's own models.
 
 The flag is enforced on the server, not just in the page. With it off, `/api/decide` and `/api/match/start` reject any model other than the slot's own roster model, whatever the browser sends. With it on, a picked model must be a well-formed `provider/model` id, appear on the gateway list, have a listed price, and cost no more than `MODEL_PICKER_MAX_USD_PER_CALL` (default $0.01) per call at its bound (three times the worst case of the capped prompt plus 60 output tokens). Models listed with any charge other than per-token input, output and prompt-cache prices are refused, except two opt-in extras the arena never asks for (`web_search` and `fast`), which are ignored; regional rates count, and the bound takes the highest. With the default cap that still leaves out every Claude model above Haiku: Claude Sonnet 5.5 is about $0.045 a call at its bound and Claude Opus 5.5 about $0.09, so `MODEL_PICKER_MAX_USD_PER_CALL=0.09` lets both through. Anything else is refused. A picked model that is another roster model keeps that model's API and prompt; any other is asked through chat completions, like the Gemini baseline. Mock mode still simulates the roster. Matches with a picked model are logged with the real model id and are not recorded on the leaderboard. Spend is still guarded: locally by `CALL_BUDGET_USD`, on a hosted deployment by the daily ceiling below, and a picked model whose call reports no cost is counted at its worst case rather than as free. Models that bill reasoning tokens beyond `max_tokens` could cost more than that bound.
 
