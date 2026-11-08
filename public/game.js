@@ -1343,7 +1343,7 @@ function renderWeapons() {
       if (!k) return `<td class="dim">${keys[0] === 'ammo' && w === 'pistol' ? 'unlimited' : ''}</td>`;
       const b = paramBounds(w, k), def = WEAPON_DEFAULTS[w][k];
       const lbl = { life: 'life', range: 'range', pellets: 'pellets', blast: 'blast', burst: 'burst' }[k];
-      return `<td>${lbl && keys.length > 1 ? `<span class="dim">${lbl}</span> ` : ''}<input type="number" data-w="${w}" data-k="${k}" min="${b.min}" max="${b.max}" step="1" value="${c[k]}" title="${b.label}: ${b.min} to ${b.max}, default ${def}"> <span class="dim${c[k] !== def ? ' changed' : ''}">(${def})</span></td>`;
+      return `<td><div class="weapon-value"><input type="number" data-w="${w}" data-k="${k}" min="${b.min}" max="${b.max}" step="1" value="${c[k]}" title="${b.label}: ${b.min} to ${b.max}, default ${def}"> <span class="dim${c[k] !== def ? ' changed' : ''}">(${def})${lbl && keys.length > 1 ? `<span class="caption">${lbl}</span>` : ''}</span></div></td>`;
     };
     const tick = `<input type="checkbox" data-w="${w}" data-k="on" ${c.on ? 'checked' : ''} ${w === 'pistol' ? 'disabled title="The pistol is the fallback weapon and is always on"' : ''}>`;
     return `<tr class="${c.on ? '' : 'off'}"><td>${tick}</td><td>${w}${w === 'flamethrower' ? ' <span class="dim">dmg per tick</span>' : ''}</td>${PARAM_COLS.map(cell).join('')}</tr>`;
@@ -1353,7 +1353,7 @@ function renderWeapons() {
     respawn: 'How fast a taken pickup comes back (1 = 15 s, 0.5 = 30 s, 0 = never).' };
   $('wpnPickups').innerHTML = Object.entries(PICKUP_PARAMS).map(([k, b]) => {
     const v = weaponCfg.pickups[k], def = DEFAULT_PICKUPS[k];
-    return `<div class="pk"><label>${b.label} <input type="number" data-p="${k}" min="${b.min}" max="${b.max}" step="${b.step}" value="${v}" title="${b.min} to ${b.max}, step ${b.step}, default ${def}"> <span class="dim${v !== def ? ' changed' : ''}">(${def})</span></label> <span class="dim">${help[k]}</span></div>`;
+    return `<div class="pk"><label><span>${b.label}</span> <input type="number" data-p="${k}" min="${b.min}" max="${b.max}" step="${b.step}" value="${v}" title="${b.min} to ${b.max}, step ${b.step}, default ${def}"> <span class="dim${v !== def ? ' changed' : ''}">(${def})</span></label> <span class="dim">${help[k]}</span></div>`;
   }).join('');
   $('wpnSummary').textContent = `Active: ${configSummary(weaponCfg)}  (config ${configId(weaponCfg)})`;
   for (const el of $('wpnTable').querySelectorAll('input')) el.onchange = readWeapons;
