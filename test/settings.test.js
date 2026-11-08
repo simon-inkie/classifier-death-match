@@ -48,3 +48,38 @@ test('settings markup: the header keeps play controls only; the settings sit in 
   }
   assert.doesNotMatch(html, /id="wpnModal"|id="wpnBtn"/, 'the separate weapons dialog is gone');
 });
+
+import { fighterRows, addableOptions, applyAdd, applyRemove, MIN_FIGHTERS } from '../public/settings.js';
+import { ROSTER, DEFAULT_ROSTER, MAX_FIGHTERS } from '../public/shared.js';
+
+test('fighters tab: the four classifiers by default; Gemini and the bot are offered, not in', () => {
+  const enabled = new Set(DEFAULT_ROSTER);
+  assert.deepEqual(fighterRows({ roster: ROSTER, enabled }).map((f) => f.slot), ['jev', 'luna', 'laya', 'scaledown']);
+  const add = addableOptions({ roster: ROSTER, enabled, max: MAX_FIGHTERS });
+  assert.deepEqual(add.fighters.map((o) => o.value), ['slot:gemini', 'slot:bot']);
+  assert.deepEqual(add.models, [], 'no gateway models with the picker off');
+});
+
+test('fighters tab: a gateway model plays in a free slot as that slot\'s picked model (same wire shape as the old picker)', () => {
+  const models = [{ id: 'anthropic/claude-sonnet-5.5' }, { id: 'anthropic/claude-opus-5.5' }, { id: 'google/gemini-2.5-flash-lite' }];
+  const st = { roster: ROSTER, enabled: new Set(DEFAULT_ROSTER), picked: {}, models, pickerOn: true, max: MAX_FIGHTERS };
+  assert.deepEqual(addableOptions(st).models.map((o) => o.value), ['model:anthropic/claude-sonnet-5.5', 'model:anthropic/claude-opus-5.5'], 'roster models are offered as fighters, not twice');
+  const next = applyAdd('model:anthropic/claude-sonnet-5.5', st);
+  assert.ok(next.enabled.has('gemini')); assert.deepEqual(next.picked, { gemini: 'anthropic/claude-sonnet-5.5' }, 'the chat slot first');
+  const row = fighterRows({ ...st, ...next }).find((f) => f.slot === 'gemini');
+  assert.equal(row.model, 'anthropic/claude-sonnet-5.5'); assert.equal(row.gateway, true);
+  assert.equal(addableOptions({ ...st, ...next }).models.length, 0, 'no model slot left free');
+  const back = applyRemove('gemini', { ...next });
+  assert.ok(!back.enabled.has('gemini')); assert.deepEqual(back.picked, {}, 'removing forgets the picked model');
+  assert.deepEqual(applyAdd('slot:gemini', { ...st, picked: { gemini: 'x/y' } }).picked, {}, 'a roster fighter plays its own model');
+});
+
+test('fighters tab: Remove stops at the minimum, Add at the six-fighter maximum', () => {
+  assert.equal(applyRemove('jev', { enabled: new Set(['jev', 'luna']) }), null);
+  assert.equal(MIN_FIGHTERS, 2);
+  const full = new Set(ROSTER.map((r) => r.id));
+  assert.equal(full.size, MAX_FIGHTERS);
+  assert.deepEqual(addableOptions({ roster: ROSTER, enabled: full, pickerOn: true, models: [{ id: 'a/b' }], max: MAX_FIGHTERS }), { fighters: [], models: [] });
+  assert.equal(applyAdd('slot:bot', { roster: ROSTER, enabled: full, max: MAX_FIGHTERS }), null);
+  assert.equal(applyAdd('nonsense', { roster: ROSTER, enabled: new Set(['jev']), max: MAX_FIGHTERS }), null);
+});

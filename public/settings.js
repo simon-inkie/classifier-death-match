@@ -24,7 +24,65 @@ export function trapIndex(index, count, shift) {
   return -1;
 }
 
-const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+// ---------- Fighters tab: a list with Remove, and an Add list. A fighter is a roster slot (its id is what
+// the sim, the logs and the server see); a gateway model plays in a free slot, as that slot's picked
+// model, exactly as the per-slot picker did. These functions only decide the list; game.js applies them.
+export const MIN_FIGHTERS = 2; // the page will not start a match with fewer
+
+// The slots in play, in roster order, with the model each runs.
+export function fighterRows({ roster, enabled, picked = {}, pickerOn = false }) {
+  return roster.filter((r) => enabled.has(r.id)).map((r) => {
+    const gw = pickerOn && r.kind !== 'bot' && picked[r.id] ? picked[r.id] : null;
+    return { slot: r.id, name: r.name, colour: r.colour, model: gw || r.model, gateway: Boolean(gw), bot: r.kind === 'bot' };
+  });
+}
+
+// A free slot for a gateway model: a chat slot first (the Gemini baseline's), then any other model slot.
+function freeSlot(roster, enabled) {
+  const free = roster.filter((r) => r.kind !== 'bot' && !enabled.has(r.id));
+  return (free.find((r) => r.kind === 'chat') || free[0])?.id ?? null;
+}
+
+// What the Add list offers: roster fighters not in play, and (picker on, a model slot free) the gateway
+// models not already playing. Empty at the maximum.
+export function addableOptions({ roster, enabled, picked = {}, models = [], pickerOn = false, max }) {
+  if (enabled.size >= max) return { fighters: [], models: [] };
+  const fighters = roster.filter((r) => !enabled.has(r.id))
+    .map((r) => ({ value: `slot:${r.id}`, label: r.kind === 'bot' ? 'Scripted bot (control)' : `${r.name} (${r.model})` }));
+  if (!pickerOn || !freeSlot(roster, enabled)) return { fighters, models: [] };
+  const playing = new Set(roster.filter((r) => enabled.has(r.id)).map((r) => picked[r.id] || r.model));
+  const rosterModels = new Set(roster.map((r) => r.model));
+  return { fighters, models: models.filter((m) => !rosterModels.has(m.id) && !playing.has(m.id)).map((m) => ({ value: `model:${m.id}`, label: m.id })) };
+}
+
+// Apply an Add choice. Returns the new { enabled, picked }, or null if it cannot be added.
+export function applyAdd(value, { roster, enabled, picked = {}, max }) {
+  if (enabled.size >= max || typeof value !== 'string') return null;
+  const en = new Set(enabled), pk = { ...picked };
+  if (value.startsWith('slot:')) {
+    const id = value.slice(5);
+    if (!roster.some((r) => r.id === id) || en.has(id)) return null;
+    en.add(id); delete pk[id]; // a roster fighter plays its own model
+    return { enabled: en, picked: pk };
+  }
+  if (value.startsWith('model:')) {
+    const slot = freeSlot(roster, en);
+    if (!slot) return null;
+    en.add(slot); pk[slot] = value.slice(6);
+    return { enabled: en, picked: pk };
+  }
+  return null;
+}
+
+// Remove a slot from play (and forget its picked model). null at the minimum.
+export function applyRemove(slot, { enabled, picked = {}, min = MIN_FIGHTERS }) {
+  if (!enabled.has(slot) || enabled.size <= min) return null;
+  const en = new Set(enabled), pk = { ...picked };
+  en.delete(slot); delete pk[slot];
+  return { enabled: en, picked: pk };
+}
+
+const FOCUSABLE ='button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
 export function initSettings({ onOpen = () => {} } = {}) {
   const $ = (id) => document.getElementById(id);

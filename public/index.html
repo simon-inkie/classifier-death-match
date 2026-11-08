@@ -133,7 +133,6 @@
   #wpnPickups .pk { margin: 4px 0; font-size: 12px; }
   #wpnPickups .pk > .dim { display: block; }
   #wpnTable td:first-child, #wpnTable th:first-child { text-align: center; }
-  select.mpick { max-width: 150px; text-transform: none; font-size: 10px; padding: 2px 4px; }
   #settingsModal .box { width: min(96vw, 720px); }
   .tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--line); margin: 6px 0 10px; flex-wrap: wrap; }
   .tabs [role=tab] { border-bottom: none; margin-bottom: -2px; padding: 5px 12px; }
@@ -142,8 +141,13 @@
   .tabpanel { min-height: 160px; }
   .tabpanel .grp { flex-wrap: wrap; gap: 8px; }
   #rosterGrp, #liveGrp { flex-direction: column; align-items: stretch; }
-  #rosterGrp .rrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border-left: 4px solid currentColor; padding: 2px 8px; background: #141422; }
-  #rosterGrp .rrow select.mpick { max-width: 100%; flex: 1 1 180px; font-size: 11px; }
+  .flist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .frow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: #141422; border: 1.5px solid var(--line); border-left: 5px solid var(--c); padding: 5px 10px; }
+  .frow .fname { color: var(--c); font-weight: bold; letter-spacing: 1.5px; text-transform: uppercase; min-width: 100px; }
+  .frow .fmodel { flex: 1 1 160px; min-width: 0; color: var(--dim); font-size: 11px; overflow-wrap: anywhere; }
+  .frow button:disabled, .fadd button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .fadd { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .fadd select { text-transform: none; max-width: 100%; flex: 1 1 220px; }
   #liveGrp .row { display: flex; align-items: center; gap: 6px; }
   .tblwrap { overflow-x: auto; max-width: 100%; }
   .replay-note { display: none; margin-bottom: 6px; }
@@ -175,7 +179,6 @@
   .setup-opts button:disabled { opacity: 0.4; cursor: not-allowed; }
   .setup-note { grid-column: 2; font-size: 11px; color: var(--hot); line-height: 1.4; }
   .setup-skip { display: block; margin-top: 10px; font-size: 11px; color: var(--dim); }
-  .setup-mpick { margin-top: 3px; max-width: 100%; font-size: 11px; }
   a { color: var(--hot); }
   #madeBy { position: fixed; right: 10px; bottom: 6px; z-index: 30; font-size: 10px; letter-spacing: 1px; color: var(--dim); text-decoration: none; opacity: 0.8; }
   #madeBy:hover, #madeBy:focus-visible { color: var(--hot); opacity: 1; }

@@ -456,7 +456,7 @@ test('picker ON: valid priced models play; bad ids, unknown, unpriced and too-de
   const { api } = setup({ env: { ENABLE_MODEL_PICKER: '1', MAX_MATCH_SHARE: '0.5' }, gateway: { ...gw, fetcher } });
   const models = (await call(api, 'models', { method: 'GET' })).body;
   assert.equal(models.enabled, true); assert.equal(models.source, 'gateway');
-  assert.deepEqual(models.models.map((m) => m.id), ['acme/cheap-chat', 'acme/dear-chat']);
+  assert.deepEqual(models.models.map((m) => m.id), ['acme/cheap-chat'], 'the list offers only models under the per-call cap');
   for (const [model, re] of [['https://evil.example/x', /invalid/], ['acme/missing', /unknown/], ['acme/no-price', /no listed per-token price/], ['acme/dear-chat', /too expensive/]]) {
     const r = await start(api, ['jev', 'laya'], { body: { models: { jev: model } } });
     assert.equal(r.status, 400, model); assert.match(r.body.error, re);

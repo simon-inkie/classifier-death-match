@@ -7,7 +7,7 @@ import { botDecide, mockDecide, mockLatency, rosterEntry } from './brain.js';
 import { spriteCanvases, spriteElement, spriteDataUrl } from './sprites.js';
 import * as audio from './audio.js';
 import { SKIP_KEY, showSetupOnLoad, initialMode, liveAvailability, settleMode } from './setup.js';
-import { initSettings } from './settings.js';
+import { initSettings, fighterRows, addableOptions, applyAdd, applyRemove, MIN_FIGHTERS } from './settings.js';
 import { WEAPON_NAMES, WEAPON_PARAMS, WEAPONS as WEAPON_DEFAULTS, DEFAULT_WEAPON_CONFIG, paramBounds, normaliseWeapons,
   configId, configSummary, PICKUP_PARAMS, DEFAULT_PICKUPS } from './weapons.js';
 import { buildRecord, aggregate, filterRecords, sortStandings, mostKillsIds, celebrationText } from './leaderboard.js';
@@ -115,22 +115,7 @@ function buildHeader() {
     setWeaponCfg({ ...weaponCfg, modelAims: e.target.checked });
   };
   for (const b of document.querySelectorAll('#modes button, #setupModes button')) b.onclick = () => setMode(b.dataset.mode);
-  const rg = $('rosterGrp'); rg.innerHTML = '';
-  for (const r of ROSTER) {
-    const isBot = r.kind === 'bot';
-    const l = document.createElement('label'); l.className = isBot ? 'chk botchk' : 'chk'; l.style.color = r.colour;
-    l.title = isBot ? 'Add the scripted if/else bot as a control fighter (off by default)' : r.model;
-    l.innerHTML = `<input type="checkbox" id="${isBot ? 'botToggle' : 'chk-' + r.id}" ${enabled.has(r.id) ? 'checked' : ''}> ${isBot ? 'Scripted bot (control)' : r.name}`;
-    l.querySelector('input').onchange = (e) => {
-      if (e.target.checked && enabled.size >= MAX_FIGHTERS) { e.target.checked = false; toast(`At most ${MAX_FIGHTERS} fighters`); return; }
-      e.target.checked ? enabled.add(r.id) : enabled.delete(r.id);
-      syncSetupRoster();
-      if (!running) preview();
-    };
-    const row = document.createElement('div'); row.className = 'rrow'; row.style.color = r.colour;
-    row.appendChild(l); // the slot's model picker goes after the label, in this row
-    rg.appendChild(row);
-  }
+  renderFighters();
   for (const b of document.querySelectorAll('#styleGrp button, #setupStyles button')) b.onclick = () => setStyle(b.dataset.style);
   setStyle(charStyle);
   buildSoundControls();
@@ -150,7 +135,10 @@ function buildHeader() {
   $('resDownload').onclick = () => downloadLog(lastLog);
   $('resClose').onclick = hideResults;
   $('resResetWins').onclick = () => { safeStore.set('arenaWins', {}); toast('Session wins reset'); };
-  initSettings({ onOpen: () => { if (running) toast('Fighter and gameplay changes apply from the next match'); renderWeapons(); } });
+  initSettings({ onOpen: () => {
+    if (running) toast('Fighter and gameplay changes apply from the next match');
+    renderWeapons(); renderFighters();
+  } });
   $('wpnReset').onclick = () => { setWeaponCfg({ ...DEFAULT_WEAPON_CONFIG, modelAims: weaponCfg.modelAims }); renderWeapons(); };
   $('lbBtn').onclick = openLeaderboard;
   $('lbClose').onclick = () => $('lbModal').classList.remove('show');
@@ -194,6 +182,53 @@ function buildHeader() {
   if (showSetupOnLoad(params, safeStore)) openSetup();
 }
 
+// ---------- Fighters tab: the line-up with Remove, and Add (roster fighters out of play, plus gateway
+// models when the picker is on). Same state as before: the enabled slots and the per-slot picked model.
+function setLineup(next) {
+  if (!next) return;
+  enabled.clear(); for (const id of next.enabled) enabled.add(id);
+  pickedModels = next.picked; safeStore.set('arenaPicked', pickedModels);
+  syncSetupRoster(); // re-renders this tab too
+  if (!running && mode !== 'replay') preview();
+}
+function renderFighters() {
+  const rg = $('rosterGrp'); if (!rg) return;
+  const pickerOn = Boolean(serverStatus?.modelPicker);
+  const rows = fighterRows({ roster: ROSTER, enabled, picked: pickedModels, pickerOn });
+  const add = addableOptions({ roster: ROSTER, enabled, picked: pickedModels, models: modelList, pickerOn, max: MAX_FIGHTERS });
+  const canRemove = enabled.size > MIN_FIGHTERS, canAdd = add.fighters.length + add.models.length > 0;
+  const mockNote = pickerOn && mode !== 'live' ? '<span class="dim">mock and replay play the slot\'s own model</span>' : '';
+  rg.innerHTML = `<ul class="flist" aria-label="Fighters in play">${rows.map((f) => `<li class="frow" style="--c:${esc(f.colour)}">
+      <span class="fname">${esc(f.gateway ? f.model.split('/').pop() : f.bot ? 'Scripted bot' : f.name)}</span>
+      <span class="fmodel">${esc(f.gateway ? `${f.model} in the ${f.name} slot` : f.bot ? 'if/else control' : f.model)}${f.gateway ? ` ${mockNote}` : ''}</span>
+      <button type="button" data-remove="${esc(f.slot)}" ${canRemove ? '' : 'disabled'} aria-label="Remove ${esc(f.gateway ? f.model : f.name)}">Remove</button></li>`).join('')}</ul>
+    <div class="fadd">
+      <button type="button" id="addBtn" ${canAdd ? '' : 'disabled'} aria-expanded="false" aria-controls="addSel">Add fighter</button>
+      <select id="addSel" aria-label="Fighter or model to add" hidden><option value="">Choose a fighter or model...</option>
+        ${add.fighters.length ? `<optgroup label="Arena fighters">${add.fighters.map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('')}</optgroup>` : ''}
+        ${add.models.length ? `<optgroup label="Gateway models (live only)">${add.models.map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('')}</optgroup>` : ''}
+      </select>
+      <span class="dim">${enabled.size} of ${MAX_FIGHTERS} fighters, at least ${MIN_FIGHTERS}.</span>
+    </div>`;
+  for (const b of rg.querySelectorAll('[data-remove]')) {
+    b.onclick = () => {
+      setLineup(applyRemove(b.dataset.remove, { enabled, picked: pickedModels }));
+      ($('rosterGrp').querySelector('[data-remove]:not([disabled])') || $('addBtn'))?.focus();
+    };
+  }
+  const sel = $('addSel');
+  $('addBtn').onclick = () => {
+    sel.hidden = !sel.hidden;
+    $('addBtn').setAttribute('aria-expanded', String(!sel.hidden));
+    if (!sel.hidden) sel.focus();
+  };
+  sel.onchange = () => {
+    if (!sel.value) return;
+    setLineup(applyAdd(sel.value, { roster: ROSTER, enabled, picked: pickedModels, max: MAX_FIGHTERS }));
+    $('addBtn')?.focus();
+  };
+}
+
 function kindLabel(r) {
   if (r.kind === 'chat') return 'Chat LLM (JSON)';
   if (r.kind === 'bot') return 'If/Else Bot';
@@ -227,8 +262,6 @@ function buildSetupModal() {
         return;
       }
       e.target.checked ? enabled.add(r.id) : enabled.delete(r.id);
-      const hdrChk = $(r.kind === 'bot' ? 'botToggle' : `chk-${r.id}`);
-      if (hdrChk) hdrChk.checked = e.target.checked;
       syncSetupRoster();
       if (!running) preview();
     };
@@ -255,7 +288,7 @@ function syncSetupRoster() {
     const m = row.querySelector('.setup-model');
     if (m && rosterById[id]) m.textContent = shownModel(id);
   }
-  for (const sel of document.querySelectorAll('select.mpick')) sel.value = pickedModels[sel.dataset.id] || '';
+  renderFighters();
   if ($('setupModelAims')) $('setupModelAims').checked = Boolean(weaponCfg.modelAims);
   updateSetupLive();
 }
@@ -322,7 +355,7 @@ async function refreshStatus() {
     k.className = `chip ${serverStatus.keyLoaded ? 'ok' : 'bad'}`;
     updateBudget(serverStatus.budget);
     applyHostedUi();
-    if (serverStatus.modelPicker) buildModelPickers(); else clearModelPickers();
+    if (serverStatus.modelPicker) loadModelList(); else { modelList = []; syncSetupRoster(); }
   } catch {
     $('keyChip').textContent = 'PROXY DOWN'; $('keyChip').className = 'chip bad';
     serverStatus = null; statusKnown = true; settleFirstMode();
@@ -355,39 +388,14 @@ function applyHostedUi() {
   if (serverStatus?.spendMessage && mode === 'live') notice(serverStatus.spendMessage);
 }
 
-// ---------- model picker (only when the server has ENABLE_MODEL_PICKER on)
-function clearModelPickers() { for (const el of document.querySelectorAll('.mpick')) el.remove(); }
-async function buildModelPickers() {
+// ---------- model picker (only when the server has ENABLE_MODEL_PICKER on): the gateway models the
+// Fighters tab can add. A picked model that the server no longer offers is dropped.
+async function loadModelList() {
   try {
     const j = await (await fetch('/api/models')).json();
-    if (!j.enabled) { clearModelPickers(); return; }
-    modelList = Array.isArray(j.models) ? j.models : [];
+    modelList = j.enabled && Array.isArray(j.models) ? j.models : [];
   } catch { return; }
-  clearModelPickers();
-  // one select in the header and one in the setup modal per slot, kept in step through syncSetupRoster
-  const pickerFor = (r, cls) => {
-    const sel = document.createElement('select');
-    sel.className = cls; sel.dataset.id = r.id; sel.title = `Model for the ${r.name} slot`; sel.setAttribute('aria-label', sel.title);
-    const opts = [`<option value="">${esc(r.model)}</option>`];
-    for (const m of modelList) if (m.id !== r.model) opts.push(`<option value="${esc(m.id)}">${esc(m.id)}</option>`);
-    sel.innerHTML = opts.join('');
-    sel.value = pickedModels[r.id] || '';
-    sel.onclick = (e) => e.stopPropagation(); // inside the modal row's label: do not toggle the fighter
-    sel.onchange = () => {
-      if (sel.value) pickedModels[r.id] = sel.value; else delete pickedModels[r.id];
-      safeStore.set('arenaPicked', pickedModels);
-      sel.blur();
-      syncSetupRoster();
-      if (!running) preview();
-    };
-    return sel;
-  };
-  for (const r of ROSTER) {
-    if (r.kind === 'bot') continue;
-    if (pickedModels[r.id] && !modelList.some((m) => m.id === pickedModels[r.id])) delete pickedModels[r.id];
-    $(`chk-${r.id}`)?.closest('label')?.after(pickerFor(r, 'mpick'));
-    document.querySelector(`#setupRoster .setup-row[data-id="${r.id}"] .setup-info`)?.appendChild(pickerFor(r, 'mpick setup-mpick'));
-  }
+  for (const id of Object.keys(pickedModels)) if (!modelList.some((m) => m.id === pickedModels[id])) delete pickedModels[id];
   syncSetupRoster();
   if (!running && mode !== 'replay') preview();
 }

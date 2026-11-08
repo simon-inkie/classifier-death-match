@@ -8,7 +8,7 @@ import { ROSTER, rosterById } from './public/shared.js';
 import { buildRequest, parseResponse } from './adapters.js';
 import { normaliseWeapons } from './public/weapons.js';
 import { cleanRecord, MAX_RECORDS } from './public/leaderboard.js';
-import { pickerEnabled, resolveFighter, createCatalogue, maxUsdPerCall } from './lib/models.js';
+import { pickerEnabled, resolveFighter, createCatalogue, maxUsdPerCall, pickableModels } from './lib/models.js';
 import { conservativeCallUsd } from './lib/spend.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -143,7 +143,7 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === '/api/models' && req.method === 'GET') {
       if (!PICKER) return send(res, 200, { enabled: false, models: [] });
       const { source, models } = await catalogue();
-      return send(res, 200, { enabled: true, source, models: models.filter((m) => m.price).map(({ id, name, price }) => ({ id, name, price })) });
+      return send(res, 200, { enabled: true, source, models: pickableModels(models, MAX_CALL_USD) });
     }
     if (u.pathname === '/api/match/start' && req.method === 'POST') {
       // Local: no token, no rate limit (the page asks so it works the same here and on the hosted site).
