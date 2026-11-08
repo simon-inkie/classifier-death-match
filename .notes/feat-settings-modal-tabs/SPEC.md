@@ -49,3 +49,18 @@ play a fighter slot. 2: move every setting off the top bar into one Settings but
 - Pure key logic in `public/settings.js` tested in `test/settings.test.js`, plus a markup contract test.
   Tests 90/90. Headless Chromium check at 1366 and 390 wide: arrows, Tab wrap, Escape restores focus to
   Settings, no horizontal scroll, mock match runs, no console errors.
+
+### 2026-11-08 Simon feedback round
+- Fighters tab: per-slot model drop-downs gone (header modal and intro). The line-up is a list with
+  Remove (disabled at 2) and Add fighter (disabled at 6), whose list is the roster fighters not playing
+  plus, picker on, gateway models. A gateway model takes a free model slot (chat slot first) as that
+  slot's `pickedModels` entry, so `/api/match/start` and `/api/decide` see exactly what the old picker sent.
+  With 4 classifiers in, one gateway model fits; adding Sonnet and Opus means removing a classifier.
+- `/api/models` (local and hosted) now lists only models the cap allows (`pickableModels`), so Add never
+  offers a model the server refuses. Over-cap models still refused on start/decide as before.
+- Tabs and sound "missing": reproduced. The tabs and sound render fine at both widths, picker on and
+  off; no caching (all routes `no-store`, and 8792/8793 serve the same checkout files). What Simon saw is
+  the first-run intro, which shows on every load, covers the whole page including Settings, and has
+  fighters and match settings but no tabs or sound. Fix: an All settings button at the top of the intro
+  opens Settings; Settings footer shows the host and picker state, to tell the three servers apart.
+- Follow-up: arena panels still show the slot name (GEMINI) for a gateway model in that slot.

@@ -135,10 +135,13 @@ function buildHeader() {
   $('resDownload').onclick = () => downloadLog(lastLog);
   $('resClose').onclick = hideResults;
   $('resResetWins').onclick = () => { safeStore.set('arenaWins', {}); toast('Session wins reset'); };
-  initSettings({ onOpen: () => {
+  const settingsUi = initSettings({ onOpen: () => {
     if (running) toast('Fighter and gameplay changes apply from the next match');
     renderWeapons(); renderFighters();
+    // which server this page talks to: the older local servers serve the same files with other settings
+    $('serverInfo').textContent = `${location.host}, model picker ${serverStatus?.modelPicker ? 'on' : 'off'}`;
   } });
+  $('splashSettings').onclick = () => { $('splash').classList.remove('show'); settingsUi.open(); };
   $('wpnReset').onclick = () => { setWeaponCfg({ ...DEFAULT_WEAPON_CONFIG, modelAims: weaponCfg.modelAims }); renderWeapons(); };
   $('lbBtn').onclick = openLeaderboard;
   $('lbClose').onclick = () => $('lbModal').classList.remove('show');

@@ -113,7 +113,7 @@ export function initSettings({ onOpen = () => {} } = {}) {
   const close = () => {
     if (!modal.classList.contains('show')) return;
     modal.classList.remove('show');
-    (opener && document.contains(opener) ? opener : btn).focus();
+    (opener && opener.isConnected && opener.offsetParent !== null ? opener : btn).focus(); // a hidden opener (the intro's button) cannot take focus
   };
 
   tabs.forEach((t, i) => {

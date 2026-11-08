@@ -159,6 +159,7 @@
   #splash .box { width: min(94vw, 540px); padding: 18px 22px; }
   #splash .sub { color: var(--dim); font-size: 11px; margin-bottom: 12px; line-height: 1.45; }
   #splash .by { color: var(--dim); font-size: 11px; letter-spacing: 2px; margin-bottom: 2px; }
+  .setup-more { font-size: 11px; color: var(--dim); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .setup-sec { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
   .setup-lbl { font-size: 11px; color: var(--hot); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 6px; }
   .setup-roster { display: flex; flex-direction: column; gap: 6px; }
@@ -278,6 +279,7 @@
   </div>
   <div class="btns">
     <button type="button" id="setupBtn" title="Open the first-run setup walkthrough">Intro</button>
+    <span class="dim" id="serverInfo"></span>
     <button type="button" id="settingsClose" class="go" style="margin-left:auto">Done</button>
   </div>
 </div></div>
@@ -298,6 +300,7 @@
   <div class="by">INKIE PRESENTS</div>
   <h2 id="splashTitle">CLASSIFIER DEATH MATCH</h2>
   <div class="sub">AI models steer fighters round an arena: every turn each gets the scene and picks 1 of 8 moves, and faster models get more turns. Last one standing wins.</div>
+  <div class="setup-more">Weapons, pickups, seed and sound live in Settings. <button id="splashSettings" type="button">All settings</button></div>
   <div class="setup-sec">
     <div class="setup-lbl">1. Fighters (tick up to 6)</div>
     <div class="setup-roster" id="setupRoster"></div>
@@ -327,7 +330,7 @@
     <button id="splashGo" type="button">Look around first</button>
     <a href="https://inkie.ink" target="_blank" rel="noopener" style="margin-left:auto">Made by Inkie</a>
   </div>
-  <label class="chk setup-skip"><input type="checkbox" id="setupSkip"> Do not show this again (Settings, then Intro, opens it)</label>
+  <label class="chk setup-skip"><input type="checkbox" id="setupSkip"> Do not show this again (Settings in the top bar has everything; its Intro button reopens this)</label>
 </div></div>
 <a id="madeBy" href="https://inkie.ink" target="_blank" rel="noopener">MADE BY INKIE</a>
 <div id="toast"></div>
