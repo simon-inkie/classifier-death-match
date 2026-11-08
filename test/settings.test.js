@@ -68,21 +68,81 @@ test('fighters tab: a gateway model plays in a free slot as that slot\'s picked 
   const st = { roster: ROSTER, enabled: new Set(DEFAULT_ROSTER), picked: {}, models, pickerOn: true, max: MAX_FIGHTERS };
   assert.deepEqual(addableOptions(st).models.map((o) => o.value), ['model:anthropic/claude-sonnet-5.5', 'model:anthropic/claude-opus-5.5'], 'roster models are offered as fighters, not twice');
   const next = applyAdd('model:anthropic/claude-sonnet-5.5', st);
-  assert.ok(next.enabled.has('gemini')); assert.deepEqual(next.picked, { gemini: 'anthropic/claude-sonnet-5.5' }, 'the chat slot first');
-  const row = fighterRows({ ...st, ...next }).find((f) => f.slot === 'gemini');
+  assert.ok(next.enabled.has('gw1')); assert.deepEqual(next.picked, { gw1: 'anthropic/claude-sonnet-5.5' }, 'the spare gateway slot first');
+  const row = fighterRows({ ...st, ...next }).find((f) => f.slot === 'gw1');
   assert.equal(row.model, 'anthropic/claude-sonnet-5.5'); assert.equal(row.gateway, true);
-  assert.equal(addableOptions({ ...st, ...next }).models.length, 0, 'no model slot left free');
-  const back = applyRemove('gemini', { ...next });
-  assert.ok(!back.enabled.has('gemini')); assert.deepEqual(back.picked, {}, 'removing forgets the picked model');
+  assert.equal(addableOptions({ ...st, ...next }).models.length, 1, 'another gateway slot remains free');
+  const back = applyRemove('gw1', { ...next });
+  assert.ok(!back.enabled.has('gw1')); assert.deepEqual(back.picked, {}, 'removing forgets the picked model');
   assert.deepEqual(applyAdd('slot:gemini', { ...st, picked: { gemini: 'x/y' } }).picked, {}, 'a roster fighter plays its own model');
 });
 
 test('fighters tab: Remove stops at the minimum, Add at the six-fighter maximum', () => {
   assert.equal(applyRemove('jev', { enabled: new Set(['jev', 'luna']) }), null);
   assert.equal(MIN_FIGHTERS, 2);
-  const full = new Set(ROSTER.map((r) => r.id));
+  const full = new Set(ROSTER.slice(0, MAX_FIGHTERS).map((r) => r.id));
   assert.equal(full.size, MAX_FIGHTERS);
   assert.deepEqual(addableOptions({ roster: ROSTER, enabled: full, pickerOn: true, models: [{ id: 'a/b' }], max: MAX_FIGHTERS }), { fighters: [], models: [] });
   assert.equal(applyAdd('slot:bot', { roster: ROSTER, enabled: full, max: MAX_FIGHTERS }), null);
   assert.equal(applyAdd('nonsense', { roster: ROSTER, enabled: new Set(['jev']), max: MAX_FIGHTERS }), null);
+});
+
+test('model chooser searches names, ids and company names without changing available slots', () => {
+  const models = [
+    { id: 'anthropic/claude-sonnet-5.5', name: 'Claude Sonnet 5.5' },
+    { id: 'moonshotai/kimi-k2', name: 'Kimi K2' },
+  ];
+  const st = { roster: ROSTER, enabled: new Set(DEFAULT_ROSTER), models, pickerOn: true, max: MAX_FIGHTERS };
+  for (const query of [' SONNET ', 'claude-sonnet-5.5', 'ANTHROPIC']) {
+    const options = addableOptions({ ...st, query });
+    assert.deepEqual(options.models.map((m) => m.value), ['model:anthropic/claude-sonnet-5.5']);
+    assert.match(options.models[0].label, /Claude Sonnet 5.5 \(Anthropic\)/);
+  }
+  assert.equal(addableOptions({ ...st, query: 'Moonshot AI' }).models[0].value, 'model:moonshotai/kimi-k2');
+  assert.deepEqual(addableOptions({ ...st, query: 'no matching model' }), { fighters: [], models: [] });
+  assert.equal(addableOptions({ ...st, query: '' }).models.length, 2);
+  const next = applyAdd('model:anthropic/claude-sonnet-5.5', st);
+  const row = fighterRows({ ...st, ...next }).find((f) => f.slot === 'gw1');
+  assert.equal(row.name, 'claude-sonnet-5.5');
+  assert.notEqual(row.iconId, 'gemini');
+});
+
+test('add results keep arena fighters before gateway models and preserve catalogue order when filtered', () => {
+  const models = [
+    { id: 'google/gemma-3', name: 'Gemma 3' },
+    { id: 'anthropic/claude-sonnet-5.5', name: 'Claude Sonnet 5.5' },
+    { id: 'google/gemma-2', name: 'Gemma 2' },
+  ];
+  const st = { roster: ROSTER, enabled: new Set(DEFAULT_ROSTER), models, pickerOn: true, max: MAX_FIGHTERS };
+  const options = addableOptions({ ...st, query: ' GOOGLE ' });
+  const results = [...options.fighters, ...options.models];
+  assert.deepEqual(results.map((o) => o.value), ['slot:gemini', 'model:google/gemma-3', 'model:google/gemma-2']);
+  assert.deepEqual(results.map((o) => o.company), ['Google', 'Google', 'Google']);
+  assert.deepEqual(results.map((o) => o.name), ['GEMINI', 'Gemma 3', 'Gemma 2']);
+  assert.deepEqual(addableOptions({ ...st, query: ' CLAUDE ' }).models.map((o) => o.value), ['model:anthropic/claude-sonnet-5.5']);
+});
+
+
+test('any six gateway models can fill a line-up without exposing spare slots as built-in fighters', () => {
+  let st = { roster: ROSTER, enabled: new Set(), picked: {}, pickerOn: true, max: MAX_FIGHTERS };
+  for (let i = 0; i < MAX_FIGHTERS; i++) {
+    const next = applyAdd(`model:acme/model-${i}`, st);
+    assert.ok(next); st = { ...st, ...next };
+  }
+  assert.equal(st.enabled.size, MAX_FIGHTERS);
+  assert.deepEqual([...st.enabled], ['gw1', 'gw2', 'gw3', 'gw4', 'gw5', 'gemini']);
+  assert.equal(applyAdd('model:acme/extra', st), null);
+  assert.equal(new Set(fighterRows(st).map((f) => f.name)).size, MAX_FIGHTERS);
+  const empty = addableOptions({ ...st, enabled: new Set(), picked: {} });
+  assert.ok(empty.fighters.every((f) => !f.value.startsWith('slot:gw')));
+});
+
+
+test('a picked model can be followed by the Gemini baseline in a mixed line-up', () => {
+  const st = { roster: ROSTER, enabled: new Set(DEFAULT_ROSTER), picked: {}, max: MAX_FIGHTERS };
+  const picked = applyAdd('model:anthropic/claude-sonnet-5.5', st);
+  const mixed = applyAdd('slot:gemini', { ...st, ...picked });
+  assert.equal(mixed.enabled.size, MAX_FIGHTERS);
+  assert.equal(mixed.picked.gw1, 'anthropic/claude-sonnet-5.5');
+  assert.equal(mixed.picked.gemini, undefined);
 });

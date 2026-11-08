@@ -79,6 +79,12 @@ export const ROSTER = [
   { id: 'bot', name: 'BOT', model: 'scripted if/else', kind: 'bot', transport: 'local', on: false,
     colour: '#c8c8c8', price: { in: 0, out: 0 },
     mock: { base: 2, jitter: 2, err: 0, skill: 0 } },
+  // Spare chat slots let any line-up contain up to six picked gateway models.
+  ...['#ef8855', '#51c7da', '#a8d65c', '#db7799', '#e0bb80'].map((colour, i) => ({
+    id: `gw${i + 1}`, name: `GATEWAY ${i + 1}`, model: 'google/gemini-2.5-flash-lite',
+    gatewaySlot: true, kind: 'chat', transport: 'chat', on: false, colour,
+    price: { in: 0.10e-6, out: 0.40e-6 }, mock: { base: 900, jitter: 600, err: 0.04, skill: 3.4 },
+  })),
 ];
 
 export const rosterById = Object.fromEntries(ROSTER.map((r) => [r.id, r]));

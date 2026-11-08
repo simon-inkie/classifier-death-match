@@ -11,8 +11,8 @@ const worst = args.includes('--worst');
 const pos = args.filter((a) => !a.startsWith('--'));
 const n = Number(pos[0] || 2);
 const only = pos.slice(1);
-const fighters = ROSTER.filter((r) => r.kind !== 'bot' && (!only.length || only.includes(r.id)));
-const state = createMatch({ seed: 7, roster: ROSTER.map((r) => r.id) });
+const fighters = ROSTER.filter((r) => r.kind !== 'bot' && !r.gatewaySlot && (!only.length || only.includes(r.id)));
+const state = createMatch({ seed: 7, roster: ROSTER.filter((r) => !r.gatewaySlot).map((r) => r.id) });
 
 for (const f of fighters) {
   for (let i = 0; i < n; i++) {

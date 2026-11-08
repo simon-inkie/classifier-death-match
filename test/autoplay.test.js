@@ -47,8 +47,8 @@ function fakeProxy(clock, { latency = 120, fail = () => false, budgetAt = Infini
 }
 
 test('rotation balances roster indices AND physical slots despite the seed offset', () => {
-  for (const n of [2, 3, 4, 5]) for (const seedStart of [0, 1, 7, 42]) {
-    const fighters = [...DEFAULT_ROSTER, 'gemini'].slice(0, n);
+  for (const n of [2, 3, 4, 5, 6]) for (const seedStart of [0, 1, 7, 42]) {
+    const fighters = [...DEFAULT_ROSTER, 'gemini', 'gw1'].slice(0, n);
     const indexCounts = Object.fromEntries(fighters.map((id) => [id, Array(n).fill(0)]));
     const slotCounts = structuredClone(indexCounts);
     for (let i = 0; i < n * n; i++) {
@@ -64,6 +64,8 @@ test('CLI validates options, preserves pickup defaults and supports config fragm
   assert.equal(o.matches, 50); assert.equal(o.parallel, 4); assert.equal(o.budgetGbp, 5); assert.equal(o.usdPerGbp, 1.3);
   assert.deepEqual(o.weaponConfig.pickups, { density: 0.75, respawn: 1 });
   assert.throws(() => parseArgs(['--fighters', 'jev,bot']));
+  assert.equal(parseArgs(['--fighters', 'gemini,gw1,gw2,gw3,gw4,gw5']).fighters.length, 6);
+  assert.throws(() => parseArgs(['--fighters', 'gemini,gw1,gw2,gw3,gw4,gw5,jev']));
   assert.throws(() => parseArgs(['--parallel', '0'])); assert.throws(() => parseArgs(['--budget-gbp', 'NaN']));
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arena-config-'));
   try {
@@ -179,7 +181,9 @@ test('Ctrl-C stops launches, lets active matches finish and serialises record PO
 
 // The real proxy is started only on 8795, points exclusively at this local fake
 // gateway, uses a dummy key and temporary leaderboard, and is stopped by its PID.
-test('offline proxy integration on 8795: USD cap, status, and concurrent atomic leaderboard writes', async () => {
+test('offline proxy integration on 8795: USD cap, status, and concurrent atomic leaderboard writes', {
+  skip: process.env.ARENA_SKIP_PORT_TESTS === '1' && 'Local proxy integration requires port 8795 and an ephemeral gateway port',
+}, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arena-proxy-'));
   let gatewayCalls = 0;
   const gateway = http.createServer(async (req, res) => {

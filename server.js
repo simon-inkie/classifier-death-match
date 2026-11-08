@@ -4,7 +4,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROSTER, rosterById } from './public/shared.js';
+import { ROSTER, rosterById, MAX_FIGHTERS } from './public/shared.js';
 import { buildRequest, parseResponse } from './adapters.js';
 import { normaliseWeapons } from './public/weapons.js';
 import { cleanRecord, MAX_RECORDS } from './public/leaderboard.js';
@@ -131,7 +131,7 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === '/api/decide' && req.method === 'POST') {
       const { fighter, scene, weapons, model } = JSON.parse(await readBody(req, 1e5));
       let picked;
-      if (model != null) { // checked on the server: the page hiding the picker is not the control
+      if (model != null || rosterById[fighter]?.gatewaySlot) { // checked on the server: the page hiding the picker is not the control
         const r = await resolveSlot(fighter, model);
         if (!r.ok) return send(res, r.status, { error: r.error, stop: true });
         if (r.picked) picked = r.fighter;
@@ -149,10 +149,15 @@ const server = http.createServer(async (req, res) => {
       // Local: no token, no rate limit (the page asks so it works the same here and on the hosted site).
       // It only checks the fighters' models and that the spend budget is not already gone.
       const { fighters, models } = JSON.parse((await readBody(req, 1e4)) || '{}');
-      for (const id of Array.isArray(fighters) ? fighters : []) {
+      if (!Array.isArray(fighters) || fighters.length < 2 || fighters.length > MAX_FIGHTERS || new Set(fighters).size !== fighters.length || !fighters.every((id) => typeof id === 'string' && Object.hasOwn(rosterById, id)))
+        return send(res, 400, { error: `pick 2 to ${MAX_FIGHTERS} different known fighters` });
+      const selectedModels = new Set();
+      for (const id of fighters) {
         if (!rosterById[id] || rosterById[id].kind === 'bot') continue;
         const r = await resolveSlot(id, models?.[id]);
         if (!r.ok) return send(res, r.status, { error: `${id}: ${r.error}` });
+        if (selectedModels.has(r.fighter.model)) return send(res, 400, { error: 'different slots must run different models' });
+        selectedModels.add(r.fighter.model);
       }
       if (COST_MAX !== null && usedUsd >= COST_MAX) return send(res, 429, { error: `cost budget spent ($${usedUsd}/$${COST_MAX})`, stop: true });
       return send(res, 200, { matchToken: null, local: true });

@@ -173,6 +173,10 @@ const C4 = 261.63, note = (n) => C4 * Math.pow(2, n / 12); // n semitones from m
 
 // ---------- sound effects
 export const sfx = {
+  countdown(fight = false) {
+    if (!admit('countdown', 'countdown', 2)) return;
+    tone({ type: 'square', f0: fight ? 1480 : 740, dur: fight ? 0.2 : 0.1, vol: 0.08 });
+  },
   shot(weapon, fid) {
     bump(stats.byKind, `shot:${weapon}`);
     if (!admit('shot', `shot:${fid}`)) return;

@@ -1,7 +1,7 @@
 // All-time leaderboard: build one record per finished match, clean records the server receives,
 // and aggregate records into per-fighter standings. Pure, shared by the page, the proxy and the tests.
 import { TICK_HZ, MATCH_TICKS } from './sim.js';
-import { ROSTER } from './shared.js';
+import { ROSTER, rosterById, MAX_FIGHTERS } from './shared.js';
 import { configId, configSummary, normaliseWeapons } from './weapons.js';
 
 const r1 = (x) => Math.round(x * 10) / 10;
@@ -47,13 +47,13 @@ export function celebrationText(state) {
 // stats: per fighter id { lat: [ms...], errors (all, timeouts included), timeouts, decisions, calls, cost, costEst }.
 // cost is USD for the match (null for the bot, or when the page gave none); costEst: any of it estimated.
 // The record keeps errors and timeouts apart: errors there excludes timeouts.
-export function buildRecord({ state, mode, weapons, stats, ts = new Date().toISOString() }) {
+export function buildRecord({ state, mode, weapons, stats, models = {}, ts = new Date().toISOString() }) {
   const cfg = normaliseWeapons(weapons);
   const places = placesFor(state);
   const fighters = state.ranking.map((id) => {
     const f = state.fighters.find((x) => x.id === id), s = stats[id] || {};
     const lat = s.lat || [];
-    return { id, place: places[id], alive: f.alive, hp: Math.max(0, f.hp),
+    return { id, model: models[id] || rosterById[id].model, place: places[id], alive: f.alive, hp: Math.max(0, f.hp),
       survivalS: r1((f.deathTick ?? state.tick) / TICK_HZ), kills: f.kills, damage: f.dealt || 0,
       meanMs: lat.length ? Math.round(lat.reduce((a, b) => a + b, 0) / lat.length) : null, latN: lat.length,
       decisions: s.decisions || 0, errors: Math.max(0, (s.errors || 0) - (s.timeouts || 0)), timeouts: s.timeouts || 0,
@@ -73,10 +73,11 @@ const plain = (v, n) => str(v, n).replace(/[^\w .,;:()+\-\/=%~]/g, '');
 export function cleanRecord(r) {
   if (!r || typeof r !== 'object') throw new Error('no record');
   if (r.mode !== 'live' && r.mode !== 'mock') throw new Error('mode must be live or mock');
-  if (!Array.isArray(r.fighters) || r.fighters.length < 2 || r.fighters.length > 6) throw new Error('need 2 to 6 fighters');
+  if (!Array.isArray(r.fighters) || r.fighters.length < 2 || r.fighters.length > MAX_FIGHTERS) throw new Error('need 2 to 6 fighters');
   const fighters = r.fighters.map((f) => {
     if (!KNOWN.has(f?.id)) throw new Error(`unknown fighter ${str(f?.id, 20)}`);
-    return { id: f.id, place: num(f.place, 1, 6, 6) | 0, alive: Boolean(f.alive), hp: num(f.hp, 0, 100) | 0,
+    const model = typeof f.model === 'string' && /^[a-z0-9][a-z0-9-]{0,39}\/[a-z0-9][a-z0-9._-]{0,99}$/i.test(f.model) && !f.model.includes('..') ? f.model : undefined;
+    return { id: f.id, ...(model ? { model } : {}), place: num(f.place, 1, 6, 6) | 0, alive: Boolean(f.alive), hp: num(f.hp, 0, 100) | 0,
       survivalS: r1(num(f.survivalS, 0, 600)), kills: num(f.kills, 0, 99) | 0, damage: num(f.damage, 0, 1e5) | 0,
       meanMs: f.meanMs == null ? null : Math.round(num(f.meanMs, 0, 1e5)), latN: num(f.latN, 0, 1e5) | 0,
       decisions: num(f.decisions, 0, 1e5) | 0, errors: num(f.errors, 0, 1e5) | 0, timeouts: num(f.timeouts, 0, 1e5) | 0,
@@ -100,7 +101,10 @@ export function aggregate(records, opts = {}) {
   const rows = {};
   for (const m of filterRecords(records, opts)) {
     for (const f of m.fighters) {
-      const a = (rows[f.id] ||= { id: f.id, played: 0, wins: 0, placeSum: 0, survSum: 0, kills: 0, damage: 0,
+      const model = f.model || rosterById[f.id]?.model;
+      const builtIn = ROSTER.find((r) => !r.gatewaySlot && r.model === model);
+      const key = builtIn?.id || model || f.id;
+      const a = (rows[key] ||= { id: key, slotId: builtIn?.id || f.id, model, played: 0, wins: 0, placeSum: 0, survSum: 0, kills: 0, damage: 0,
         latSum: 0, latN: 0, errors: 0, timeouts: 0, costSum: 0, costGames: 0, costCalls: 0, costEst: false });
       a.played++;
       if (m.winner === f.id) a.wins++;
@@ -111,7 +115,7 @@ export function aggregate(records, opts = {}) {
       if (f.cost != null) { a.costSum += f.cost; a.costGames++; a.costCalls += f.calls || 0; if (f.costEst) a.costEst = true; }
     }
   }
-  return Object.values(rows).map((a) => ({ id: a.id, played: a.played, wins: a.wins, winRate: a.wins / a.played,
+  return Object.values(rows).map((a) => ({ id: a.id, slotId: a.slotId, model: a.model, played: a.played, wins: a.wins, winRate: a.wins / a.played,
     avgPlace: a.placeSum / a.played, avgSurvivalS: a.survSum / a.played, kills: a.kills, damage: a.damage,
     meanMs: a.latN ? a.latSum / a.latN : null, errors: a.errors, timeouts: a.timeouts,
     totalCost: a.costGames ? a.costSum : null, avgCostGame: a.costGames ? a.costSum / a.costGames : null,

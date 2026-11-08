@@ -21,6 +21,7 @@ import { resolveFighter, parseCatalogue, validModelId } from '../lib/models.js';
 import { rosterById } from '../public/shared.js';
 import { createMatch, sceneFor, applyAction, step } from '../public/sim.js';
 import { botDecide, runHeadlessMock } from '../public/brain.js';
+import { recordFromPlay } from '../lib/verify.js';
 import { cleanRecord } from '../public/leaderboard.js';
 import { DEFAULT_WEAPON_CONFIG, LEGACY_WEAPON_CONFIG } from '../public/weapons.js';
 
@@ -467,7 +468,7 @@ test('picker ON: valid priced models play; bad ids, unknown, unpriced and too-de
   const last = gw.calls.at(-1);
   assert.match(last.url, /\/v1\/chat\/completions$/); assert.equal(last.body.model, 'acme/cheap-chat');
   const rec = { mode: 'live', winner: 'jev', fighters: [{ id: 'jev' }, { id: 'laya' }] };
-  assert.equal((await call(api, 'record', { body: rec, headers: { 'x-match-token': s.body.matchToken } })).status, 403, 'picked matches are not recorded');
+  assert.equal((await call(api, 'record', { body: rec, headers: { 'x-match-token': s.body.matchToken } })).status, 400, 'picked matches still require verified decisions');
 });
 
 test('picker ON in mock mode (no key): the built-in list, roster models only', async () => {
@@ -504,7 +505,9 @@ async function withProxy(env, fn) {
   }
 }
 
-test('local proxy, picker OFF: unchanged without a model, rejects a picked model before any gateway call', async () => {
+test('local proxy, picker OFF: unchanged without a model, rejects a picked model before any gateway call', {
+  skip: process.env.ARENA_SKIP_PORT_TESTS === '1' && 'Local proxy integration requires port 8796 and an ephemeral gateway port',
+}, async () => {
   await withProxy({}, async ({ post, seen, get }) => {
     assert.equal((await get('/api/status')).modelPicker, false);
     assert.equal((await post('/api/decide', { fighter: 'jev', scene })).status, 200);
@@ -516,7 +519,9 @@ test('local proxy, picker OFF: unchanged without a model, rejects a picked model
   });
 });
 
-test('local proxy, picker ON: a listed model plays through chat; an unpriced one is refused', async () => {
+test('local proxy, picker ON: a listed model plays through chat; an unpriced one is refused', {
+  skip: process.env.ARENA_SKIP_PORT_TESTS === '1' && 'Local proxy integration requires port 8796 and an ephemeral gateway port',
+}, async () => {
   await withProxy({ ENABLE_MODEL_PICKER: '1' }, async ({ post, seen }) => {
     const ok = await post('/api/decide', { fighter: 'jev', scene, model: 'acme/cheap-chat' });
     assert.equal(ok.status, 200);
@@ -728,4 +733,81 @@ test('warm decide: a match whose record is gone is refused even if its closed fl
   const before = gateway.calls.length;
   const r = await call(api, 'decide', { body: { matchToken: tok, fighter: 'laya', scene: sceneIn(['jev', 'laya'], 'laya') } });
   assert.equal(r.status, 403); assert.equal(gateway.calls.length, before, 'no paid call');
+});
+
+
+test('gateway slots resolve six selected models with independent slot colours and cost bounds', async () => {
+  const models = Array.from({ length: 6 }, (_, i) => ({ id: `acme/model-${i}`, price: { in: 0.1e-6, out: 0.4e-6 } }));
+  const ids = ['gemini', 'gw1', 'gw2', 'gw3', 'gw4', 'gw5'];
+  for (const [i, id] of ids.entries()) {
+    const resolved = resolveFighter(id, models[i].id, { enabled: true, models });
+    assert.equal(resolved.ok, true); assert.equal(resolved.fighter.id, id);
+    assert.equal(resolved.fighter.transport, 'chat'); assert.equal(resolved.fighter.colour, rosterById[id].colour);
+    assert.ok(callBound(resolved.fighter, true) > 0);
+    assert.equal(resolveFighter(id, models[i].id, { models }).status, 403);
+  }
+  const gateway = fakeGateway();
+  const catalogue = { data: models.map((m) => ({ id: m.id, type: 'language', pricing: { input: String(m.price.in), output: String(m.price.out) } })) };
+  const fetcher = async (url, opts) => url.endsWith('/v1/models') ? { ok: true, json: async () => catalogue } : gateway.fetcher(url, opts);
+  const { api } = setup({ env: { ENABLE_MODEL_PICKER: '1', DAILY_SPEND_CEILING_GBP: '100' }, gateway: { fetcher } });
+  const response = await start(api, ids, { body: { models: Object.fromEntries(ids.map((id, i) => [id, models[i].id])) } });
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  const answer = await call(api, 'decide', { body: { matchToken: response.body.matchToken, fighter: 'gw5', scene: sceneIn(ids, 'gw5') } });
+  assert.equal(answer.status, 200, JSON.stringify(answer.body));
+  assert.equal(gateway.calls.at(-1).body.model, 'acme/model-5');
+  assert.equal((await start(api, [...ids, 'jev'])).status, 400);
+});
+
+
+test('verified leaderboard records retain server-fixed picked models', () => {
+  const roster = ['gw1', 'gw2'];
+  const fighters = { gw1: { model: 'anthropic/claude-sonnet-5.5' }, gw2: { model: 'openai/gpt-6' } };
+  const decisions = roster.flatMap((f) => Array.from({ length: 20 }, (_, t) => ({ t, f, a: 'hold' }))).sort((a, b) => a.t - b.t);
+  const observed = Object.fromEntries(roster.map((id) => [id, Array.from({ length: 20 }, () => ({ ok: true, a: 'hold', ms: 100, c: .00001 }))]));
+  const { record } = recordFromPlay({ m: { roster, fighters, seed: 1, weapons: DEFAULT_WEAPON_CONFIG }, decisions, observed });
+  for (const row of record.fighters) assert.equal(row.model, fighters[row.id].model);
+});
+
+test('generic gateway slots require a model and an enabled picker, including their baseline model', async () => {
+  for (const id of ['gw1', 'gw2', 'gw3', 'gw4', 'gw5']) {
+    for (const model of [undefined, null, '']) {
+      assert.equal(resolveFighter(id, model, { enabled: true }).status, 400);
+      assert.equal(resolveFighter(id, model).status, 403);
+    }
+    assert.equal(resolveFighter(id, rosterById.gemini.model).status, 403);
+    assert.equal(resolveFighter(id, rosterById.gemini.model, { enabled: true }).picked, true);
+  }
+  for (const enabled of [false, true]) {
+    const { api } = setup({ env: { ENABLE_MODEL_PICKER: enabled ? '1' : '0' } });
+    for (const model of [undefined, '', rosterById.gemini.model]) {
+      const r = await start(api, ['jev', 'gw1'], { body: { models: { gw1: model } } });
+      assert.equal(r.status, enabled && model ? 200 : enabled ? 400 : 403, JSON.stringify(r.body));
+    }
+    assert.equal(resolveFighter('gemini', undefined, { enabled }).fighter, rosterById.gemini);
+    assert.equal((await start(api, ['jev', 'gemini'])).status, 200);
+  }
+});
+
+test('match start rejects duplicate resolved models across picked slots or an original slot', async () => {
+  const { api } = setup({ env: { ENABLE_MODEL_PICKER: '1' } });
+  for (const [fighters, models] of [
+    [['gw1', 'gw2'], { gw1: rosterById.gemini.model, gw2: rosterById.gemini.model }],
+    [['gemini', 'gw1'], { gw1: rosterById.gemini.model }],
+    [['jev', 'gw1'], { gw1: rosterById.jev.model }],
+  ]) {
+    const r = await start(api, fighters, { body: { models } });
+    assert.equal(r.status, 400); assert.match(r.body.error, /different models/);
+  }
+});
+
+test('normal four-fighter default is unchanged with the picker on or off', async () => {
+  const ids = ['jev', 'luna', 'laya', 'scaledown'];
+  for (const enabled of [false, true]) {
+    const { api } = setup({ env: { ENABLE_MODEL_PICKER: enabled ? '1' : '0' } });
+    for (const id of ids) {
+      const r = resolveFighter(id, undefined, { enabled });
+      assert.equal(r.fighter, rosterById[id]); assert.equal(r.picked, false);
+    }
+    assert.equal((await start(api, ids)).status, 200);
+  }
 });

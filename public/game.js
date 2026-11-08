@@ -3,8 +3,10 @@ import { actionsFor, ACTIONS, ROSTER, rosterById, median, DEFAULT_ROSTER, MAX_FI
 import { createMatch, applyAction, step, sceneFor, hashState, ReplayCursor, effectiveAction, normaliseLog,
   TICK_HZ, MATCH_TICKS, RING_START, CENTRE, ARENA_R, PILLAR_R, FIGHTER_R, MAX_HP, makeRng } from './sim.js';
 import { spaceAction } from './controls.js';
+import { createCountdown, drawCountdownHeadline } from './countdown.js';
 import { botDecide, mockDecide, mockLatency, rosterEntry } from './brain.js';
 import { spriteCanvases, spriteElement, spriteDataUrl } from './sprites.js';
+import { fighterIdentity, recordFighterIdentity } from './model-icons.js';
 import * as audio from './audio.js';
 import { SKIP_KEY, showSetupOnLoad, initialMode, liveAvailability, settleMode } from './setup.js';
 import { initSettings, fighterRows, addableOptions, applyAdd, applyRemove, MIN_FIGHTERS } from './settings.js';
@@ -46,13 +48,16 @@ let serverStatus = null;
 let matchToken = null, liveStarting = false, modelList = [];
 let pickedModels = readStoredObject('arenaPicked', {});
 function readStoredObject(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v && typeof v === 'object' ? v : d; } catch { return d; } }
-const slotModel = (id) => (mode === 'live' && serverStatus?.modelPicker && pickedModels[id]) || null; // mock simulates the roster
+const slotModel = (id) => (mode !== 'replay' && serverStatus?.modelPicker && pickedModels[id]) || null; // mock uses the picked identity with this slot's simulated behaviour
 const esc = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 // The model a panel names: from the log in replay, else the picked model, else the roster's.
 function shownModel(id) {
   if (mode === 'replay' && replayLog) return replayLog.roster.find((r) => r.id === id)?.model ?? rosterById[id].model;
-  return slotModel(id) || rosterById[id].model;
+  return log?.roster.find((r) => r.id === id)?.model || slotModel(id) || rosterById[id].model;
 }
+const shownIdentity = (id) => fighterIdentity(rosterById[id], shownModel(id));
+const shownName = (id) => shownIdentity(id).name;
+const shownIcon = (id) => shownIdentity(id).iconId;
 // History scrub. hist holds every decision of the match per fighter. While a row is selected, view is
 // {tick, id, idx} and viewMatch is a separate, re-simulated state for that tick: the live match is never touched.
 const hist = new DecisionHistory();
@@ -61,6 +66,46 @@ const shownMatch = () => viewMatch || match;
 // End-of-match winner celebration (presentation only): null, or what is showing and the results it leads to.
 let celebrate = null;
 const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+
+// The celebration's dark scrim, pixel headline and glow, across the whole viewport.
+const countdownOverlay = document.createElement('div');
+countdownOverlay.id = 'countdown';
+countdownOverlay.setAttribute('role', 'status');
+countdownOverlay.setAttribute('aria-live', 'assertive');
+countdownOverlay.style.cssText = 'position:fixed;inset:0;z-index:60;display:none;align-items:center;justify-content:center;flex-direction:column;background:rgba(4,4,10,.86);text-align:center;cursor:pointer';
+const countdownHeadline = document.createElement('canvas');
+countdownHeadline.width = 360; countdownHeadline.height = 100;
+countdownHeadline.setAttribute('aria-hidden', 'true');
+const countdownCaption = document.createElement('span');
+countdownCaption.className = 'sr-only';
+let fightSoundPlayed = false;
+const countdownHint = document.createElement('div');
+countdownHint.textContent = 'click or press any key to fight';
+countdownHint.style.cssText = 'font:13px var(--font);color:#8c8ca8;margin-top:30px';
+countdownOverlay.append(countdownCaption, countdownHeadline, countdownHint);
+document.body.appendChild(countdownOverlay);
+const countdown = createCountdown({
+  show(label) {
+    countdownOverlay.style.display = label === null ? 'none' : 'flex';
+    countdownCaption.textContent = label || '';
+    drawCountdownHeadline(countdownHeadline.getContext('2d'), label);
+    if (label === '3') fightSoundPlayed = false;
+    if (label !== null && !reducedMotion()) countdownHeadline.animate?.([
+      { transform: 'scale(0)', opacity: 0.6 }, { transform: 'scale(1)', opacity: 1 },
+    ], { duration: label === 'FIGHT!' ? 300 : 520, easing: 'cubic-bezier(.34,1.56,.64,1)' });
+  },
+  sound: (fight) => { audio.sfx.countdown(fight); if (fight) fightSoundPlayed = true; },
+  onStart: launch,
+});
+const canPreview = () => !running && !countdown.active && !liveStarting && !match?.over && mode !== 'replay';
+// Capture consumes the skip gesture before controls, dialogs or keyboard shortcuts see it.
+// The gesture that starts a countdown has already passed capture, so it cannot skip itself.
+for (const event of ['keydown', 'click']) document.addEventListener(event, (e) => {
+  if (!countdown.active) return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  if (!e.repeat) countdown.skip();
+}, true);
+
 
 // ---------- small utils
 const safeStore = {
@@ -98,7 +143,7 @@ function setWeaponCfg(c) {
   weaponCfg = normaliseWeapons(c);
   safeStore.set('arenaWeapons', weaponCfg);
   $('wpnSummary').textContent = `Active: ${configSummary(weaponCfg)}  (config ${configId(weaponCfg)})`;
-  if (!running && mode !== 'replay') preview();
+  if (canPreview()) preview();
 }
 // Leaderboard: mock matches are neither shown nor recorded unless this is ticked (off on every load;
 // &lbmock=1 ticks it, for tests).
@@ -121,7 +166,7 @@ function buildHeader() {
   $('start').onclick = onSpace;
   $('restart').onclick = restart;
   $('warm').onclick = warmUp;
-  $('seed').onchange = () => { if (!running) preview(); };
+  $('seed').onchange = () => { if (canPreview()) preview(); };
   $('logList').onchange = () => loadServerLog($('logList').value);
   $('logFile').onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
@@ -183,37 +228,39 @@ function setLineup(next) {
   enabled.clear(); for (const id of next.enabled) enabled.add(id);
   pickedModels = next.picked; safeStore.set('arenaPicked', pickedModels);
   syncSettings(); // re-renders this tab too
-  if (!running && mode !== 'replay') preview();
+  if (canPreview()) preview();
 }
 function renderFighters() {
   const rg = $('rosterGrp'); if (!rg) return;
   const pickerOn = Boolean(serverStatus?.modelPicker);
   const rows = fighterRows({ roster: ROSTER, enabled, picked: pickedModels, pickerOn });
   const add = addableOptions({ roster: ROSTER, enabled, picked: pickedModels, models: modelList, pickerOn, max: MAX_FIGHTERS });
-  // Status polls must not replace a focused control or close an open Add dropdown.
+  // Status polls must not replace a focused control or close an open Add chooser.
   const signature = JSON.stringify({ rows, add, mode });
   if (rg.dataset.lineup === signature) return;
   rg.dataset.lineup = signature;
   const canRemove = enabled.size > MIN_FIGHTERS, canAdd = add.fighters.length + add.models.length > 0;
-  const mockNote = pickerOn && mode !== 'live' ? '<span class="dim">mock and replay play the slot\'s own model</span>' : '';
+  const mockNote = pickerOn && mode === 'mock' ? '<span class="dim">mock simulates this model; no model calls</span>' : '';
   rg.innerHTML = `<ul class="flist" aria-label="Fighters in play">${rows.map((f) => `<li class="setup-row" style="--c:${esc(f.colour)}" data-slot="${esc(f.slot)}">
       <span class="setup-spr"></span>
       <span class="setup-info"><span class="setup-top">
-        <span class="setup-name">${esc(f.gateway ? f.model.split('/').pop() : f.bot ? 'Scripted bot' : f.name)}</span>
+        <span class="setup-name">${esc(f.bot ? 'Scripted bot' : f.name)}</span>
         <span class="setup-kind">${esc(f.gateway ? 'Gateway model' : kindLabel(rosterById[f.slot]))}</span>
-      </span><span class="setup-model">${esc(f.gateway ? `${f.model} in the ${f.name} slot` : f.bot ? 'if/else control' : f.model)}</span>${f.gateway ? mockNote : ''}</span>
+      </span><span class="setup-model">${esc(f.bot ? 'if/else control' : f.model)}</span>${f.gateway ? mockNote : ''}</span>
       <button type="button" data-remove="${esc(f.slot)}" ${canRemove ? '' : 'disabled'} aria-label="Remove ${esc(f.gateway ? f.model : f.name)}">Remove</button></li>`).join('')}</ul>
     <div class="fadd">
-      <button type="button" id="addBtn" ${canAdd ? '' : 'disabled'} aria-expanded="false" aria-controls="addSel">Add fighter</button>
-      <select id="addSel" aria-label="Fighter or model to add" hidden><option value="">Choose a fighter or model...</option>
-        ${add.fighters.length ? `<optgroup label="Arena fighters">${add.fighters.map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('')}</optgroup>` : ''}
-        ${add.models.length ? `<optgroup label="Gateway models (live only)">${add.models.map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('')}</optgroup>` : ''}
-      </select>
+      <button type="button" id="addBtn" ${canAdd ? '' : 'disabled'} aria-expanded="false" aria-controls="addChooser">Add fighter</button>
+      <div id="addChooser" class="fchooser" hidden>
+        <input id="modelSearch" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="addSel" aria-describedby="addCount" placeholder="Search models or companies..." aria-label="Search fighters and models" autocomplete="off">
+        <span id="addCount" class="dim" role="status" aria-live="polite"></span>
+        <div id="addSel" class="fresults" role="listbox" aria-label="Fighter or model to add"></div>
+        <span id="addEmpty" class="dim" hidden>No matching fighters or models</span>
+      </div>
       <span class="dim">${enabled.size} of ${MAX_FIGHTERS} fighters, at least ${MIN_FIGHTERS}.</span>
     </div>`;
   for (const row of rg.querySelectorAll('[data-slot]')) {
     const r = rosterById[row.dataset.slot];
-    row.querySelector('.setup-spr').appendChild(spriteElement(r.id, 34, r.colour));
+    row.querySelector('.setup-spr').appendChild(spriteElement(rows.find((f) => f.slot === r.id).iconId, 34, r.colour));
   }
   for (const b of rg.querySelectorAll('[data-remove]')) {
     b.onclick = () => {
@@ -221,16 +268,67 @@ function renderFighters() {
       ($('rosterGrp').querySelector('[data-remove]:not([disabled])') || $('addBtn'))?.focus();
     };
   }
-  const sel = $('addSel');
-  $('addBtn').onclick = () => {
-    sel.hidden = !sel.hidden;
-    $('addBtn').setAttribute('aria-expanded', String(!sel.hidden));
-    if (!sel.hidden) sel.focus();
+  const list = $('addSel'), chooser = $('addChooser'), search = $('modelSearch');
+  let results = [], active = -1;
+  const highlight = (index) => {
+    active = index;
+    for (const [i, row] of [...list.children].entries()) row.setAttribute('aria-selected', String(i === active));
+    if (active < 0) search.removeAttribute('aria-activedescendant');
+    else {
+      search.setAttribute('aria-activedescendant', list.children[active].id);
+      list.children[active].scrollIntoView({ block: 'nearest' });
+    }
   };
-  sel.onchange = () => {
-    if (!sel.value) return;
-    setLineup(applyAdd(sel.value, { roster: ROSTER, enabled, picked: pickedModels, max: MAX_FIGHTERS }));
-    $('addBtn')?.focus();
+  const choose = (index) => {
+    if (!results[index]) return;
+    setLineup(applyAdd(results[index].value, { roster: ROSTER, enabled, picked: pickedModels, max: MAX_FIGHTERS }));
+    ($('addBtn')?.disabled ? rg.querySelector('[data-remove]:not([disabled])') : $('addBtn'))?.focus();
+  };
+  const filterOptions = () => {
+    const options = addableOptions({ roster: ROSTER, enabled, picked: pickedModels, models: modelList, pickerOn, max: MAX_FIGHTERS, query: search.value });
+    results = [...options.fighters, ...options.models];
+    list.innerHTML = results.map((o, i) => `<div id="addOption-${i}" class="fresult" role="option" aria-selected="false" title="${esc(o.model)}">
+      <span class="fresult-icon" aria-hidden="true"></span>
+      <span class="fresult-info"><span class="fresult-name">${esc(o.name)}</span><span class="dim">${esc(o.company)}</span></span>
+      <span class="fresult-tag">${i < options.fighters.length ? 'arena' : 'gateway (live only)'}</span>
+    </div>`).join('');
+    [...list.children].forEach((row, i) => {
+      row.querySelector('.fresult-icon').appendChild(spriteElement(results[i].iconId, 24));
+      row.onmousedown = (e) => e.preventDefault(); // keep typing focus on the combobox
+      row.onclick = () => choose(i);
+    });
+    $('addCount').textContent = `${results.length} matches`;
+    $('addEmpty').hidden = results.length > 0;
+    list.scrollTop = 0;
+    highlight(-1);
+  };
+  filterOptions();
+  search.oninput = filterOptions;
+  const closeChooser = () => {
+    chooser.hidden = true;
+    $('addBtn').setAttribute('aria-expanded', 'false');
+    search.setAttribute('aria-expanded', 'false');
+    highlight(-1);
+    $('addBtn').focus();
+  };
+  $('addBtn').onclick = () => {
+    if (!chooser.hidden) { closeChooser(); return; }
+    chooser.hidden = false;
+    $('addBtn').setAttribute('aria-expanded', 'true');
+    search.setAttribute('aria-expanded', 'true');
+    search.focus();
+  };
+  chooser.onkeydown = (e) => {
+    if (e.isComposing) return;
+    if (e.key === 'Escape') {
+      e.preventDefault(); e.stopPropagation(); closeChooser();
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault(); e.stopPropagation();
+      if (results.length) highlight(active < 0 ? (e.key === 'ArrowDown' ? 0 : results.length - 1)
+        : (active + (e.key === 'ArrowDown' ? 1 : -1) + results.length) % results.length);
+    } else if (e.key === 'Enter') {
+      e.preventDefault(); e.stopPropagation(); choose(active < 0 ? 0 : active);
+    }
   };
 }
 
@@ -279,7 +377,7 @@ function buildSoundControls() {
 }
 
 function setMode(m) {
-  if (running) stop();
+  if (running || countdown.active || liveStarting) stop();
   mode = m;
   document.body.dataset.mode = m; // the settings tabs say a replay uses its log's fighters and settings
   for (const b of document.querySelectorAll('#modes button, #setupModes button')) b.classList.toggle('on', b.dataset.mode === m);
@@ -315,7 +413,7 @@ function settleFirstMode() {
   if (settleFirstMode.done) return;
   settleFirstMode.done = true;
   const m = settleMode(firstMode, serverStatus);
-  if (m !== mode && !running) setMode(m);
+  if (m !== mode && !running && !countdown.active && !liveStarting) setMode(m);
 }
 
 // ---------- hosted site: live-budget notice and status chips; nothing here runs on the local proxy
@@ -343,9 +441,13 @@ async function loadModelList() {
     const j = await (await fetch('/api/models')).json();
     modelList = j.enabled && Array.isArray(j.models) ? j.models : [];
   } catch { return; }
-  for (const id of Object.keys(pickedModels)) if (!modelList.some((m) => m.id === pickedModels[id])) delete pickedModels[id];
+  for (const id of Object.keys(pickedModels)) if (!modelList.some((m) => m.id === pickedModels[id])) {
+    delete pickedModels[id];
+    if (rosterById[id]?.gatewaySlot) enabled.delete(id);
+  }
+  safeStore.set('arenaPicked', pickedModels);
   syncSettings();
-  if (!running && mode !== 'replay') preview();
+  if (canPreview()) preview();
 }
 function updateBudget(b) {
   if (!b) return;
@@ -358,7 +460,16 @@ async function refreshLogList() {
   try {
     const files = await (await fetch('/api/logs')).json();
     const sel = $('logList');
-    sel.innerHTML = '<option value="">saved logs...</option>' + files.map((f) => `<option>${f}</option>`).join('');
+    sel.innerHTML = '<option value="">saved logs...</option>' + files.map((f) => `<option value="${esc(f)}">${esc(f)}</option>`).join('');
+    // Preserve the filename value/API contract; enrich a bounded set of recent labels.
+    await Promise.allSettled(files.slice(-20).map(async (name) => {
+      const resp = await fetch(`/logs/${encodeURIComponent(name)}`);
+      if (!resp.ok) return;
+      const saved = await resp.json();
+      const names = (saved.roster || []).map((r) => recordFighterIdentity(r).name);
+      const option = [...sel.options].find((o) => o.value === name);
+      if (option && names.length) option.textContent = `${name}: ${names.join(' vs ')}`;
+    }));
     if (lastLog && !replayLog) setReplayLog(lastLog);
   } catch { toast('Could not list logs (is the proxy running?)'); }
 }
@@ -370,6 +481,7 @@ async function loadServerLog(name) {
 // with or without the bot replays with exactly the fighters it had.
 function logHasBot(l) { return l.roster.some((r) => r.id === 'bot'); }
 function setReplayLog(l) {
+  if (running || countdown.active || liveStarting) stop();
   const unknown = (l.roster || []).filter((r) => !rosterById[r.id]).map((r) => r.id);
   if (!Array.isArray(l.roster) || unknown.length) { toast(`Bad log: unknown fighters ${unknown.join(', ')}`); return; }
   l = normaliseLog(l);
@@ -378,6 +490,13 @@ function setReplayLog(l) {
   roster = l.roster.map((r) => r.id);
   match = new ReplayCursor(l).state;
   buildPanels();
+  let summary = $('replayModels');
+  if (!summary) {
+    summary = document.createElement('div'); summary.id = 'replayModels';
+    summary.style.cssText = 'display:flex;gap:12px;flex-wrap:wrap;font-size:11px';
+    $('replayGrp').appendChild(summary);
+  }
+  summary.innerHTML = l.roster.map((r) => fighterCell(r)).join(' vs ');
   toast(`Loaded replay: seed ${l.seed}, ${roster.length} fighters (${logHasBot(l) ? 'with' : 'without'} bot), ${l.decisions.length} decisions, mode ${l.mode}.\nWeapons: ${l.weapons ? configSummary(normaliseWeapons(l.weapons)) : 'all (older log)'}. Press Start.`);
 }
 
@@ -395,14 +514,14 @@ function buildPanels() {
       : r.kind === 'bot' ? 'Scripted if/else control: one-hot, no model'
       : `Typed decision: probability per option${promptVariant(r) === 'compact' ? '. Compact prompt (512-token limit)' : ''}`;
     el.innerHTML = `
-      <div class="ph"><span class="spr"></span><span class="name">${r.name}</span><span class="model">${esc(shownModel(id))}</span><span class="st"></span></div>
+      <div class="ph"><span class="spr"></span><span class="name">${esc(shownName(id))}</span><span class="model">${esc(shownModel(id))}</span><span class="st"></span></div>
       <div class="viewtag"><span class="vt"></span><button type="button" class="vlive">Back to live</button></div>
       <div class="hp"><div class="fill"></div><span>100</span></div>
       <div class="stats">LAST <b class="last">-</b> MED <b class="med">-</b> <b class="dps">0.0</b>/S ERR <b class="err">0</b> COST <b class="cost">$0</b></div>
-      <div class="bars">${actionsFor(sceneFor(match, id)).map((a) => `<div class="bar" data-a="${a}" ${a.startsWith('shoot_') ? `style="--c:${rosterById[a.slice(6)].colour}"` : ''}><span class="lbl">${a.startsWith('shoot_') ? rosterById[a.slice(6)].name : a.replace('_', ' ').toUpperCase()}</span><span class="segs">${'<i></i>'.repeat(20)}</span><span class="pct"></span></div>`).join('')}</div>
+      <div class="bars">${actionsFor(sceneFor(match, id)).map((a) => `<div class="bar" data-a="${a}" ${a.startsWith('shoot_') ? `style="--c:${rosterById[a.slice(6)].colour}"` : ''}><span class="lbl">${a.startsWith('shoot_') ? esc(shownName(a.slice(6))) : a.replace('_', ' ').toUpperCase()}</span><span class="segs">${'<i></i>'.repeat(20)}</span><span class="pct"></span></div>`).join('')}</div>
       <div class="note">${note}</div>
       <ol class="log"></ol>`;
-    el.querySelector('.spr').appendChild(spriteElement(id, 36, r.colour));
+    el.querySelector('.spr').appendChild(spriteElement(shownIcon(id), 36, r.colour));
     (idx % 2 === 0 ? L : R).appendChild(el);
     const ol = el.querySelector('.log');
     const pick = (e) => { const li = e.target.closest?.('li[data-idx]'); return li ? Number(li.dataset.idx) : null; };
@@ -429,7 +548,7 @@ function setBars(id, d) {
   if (m.weapons.modelAims) {
     const options = d.probs ? Object.keys(d.probs) : actionsFor(sceneFor(m, id));
     if (d.a?.startsWith('shoot_') && !options.includes(d.a)) options.push(d.a);
-    s.el.querySelector('.bars').innerHTML = options.map((a) => `<div class="bar" data-a="${a}" ${a.startsWith('shoot_') ? `style="--c:${rosterById[a.slice(6)].colour}"` : ''}><span class="lbl">${a.startsWith('shoot_') ? rosterById[a.slice(6)].name : a.replace('_', ' ').toUpperCase()}</span><span class="segs">${'<i></i>'.repeat(20)}</span><span class="pct"></span></div>`).join('');
+    s.el.querySelector('.bars').innerHTML = options.map((a) => `<div class="bar" data-a="${a}" ${a.startsWith('shoot_') ? `style="--c:${rosterById[a.slice(6)].colour}"` : ''}><span class="lbl">${a.startsWith('shoot_') ? esc(shownName(a.slice(6))) : a.replace('_', ' ').toUpperCase()}</span><span class="segs">${'<i></i>'.repeat(20)}</span><span class="pct"></span></div>`).join('');
   }
   for (const bar of s.el.querySelectorAll('.bar[data-a]')) {
     const a = bar.dataset.a;
@@ -467,7 +586,7 @@ function recordDecision(d) {
   if (d.err) { li.className = 'e'; li.textContent = `${time}s STUNNED ${String(d.err).slice(0, 60)}`; }
   else {
     const p = d.probs ? d.probs[d.a] : d.conf;
-    li.textContent = `${time}s ${(match.weapons.modelAims && d.a.startsWith('shoot_') ? `shoot -> ${rosterById[d.a.slice(6)]?.name || d.a.slice(6)}` : d.a.replace('_', ' ').toUpperCase()).padEnd(12, ' ')} ${p == null ? '' : p.toFixed(2)} ${fmtMs(d.ms)}`;
+    li.textContent = `${time}s ${(match.weapons.modelAims && d.a.startsWith('shoot_') ? `shoot -> ${shownName(d.a.slice(6))}` : d.a.replace('_', ' ').toUpperCase()).padEnd(12, ' ')} ${p == null ? '' : p.toFixed(2)} ${fmtMs(d.ms)}`;
   }
   li.title = 'Click to rewind to this decision';
   const ol = s.el.querySelector('.log');
@@ -595,12 +714,14 @@ function preview() {
   roster = selectedRoster();
   if (roster.length < 2) { toast('Pick at least two fighters'); return; }
   celebrate = null;
+  log = null;
   match = createMatch({ seed: Number($('seed').value) | 0, roster, weapons: weaponCfg });
   buildPanels();
   refreshPanels();
 }
 
 function onSpace() {
+  if (countdown.active) { countdown.skip(); return; }
   if (view) { backToLive(); return; } // viewing history: Space returns to the live match (and resumes it)
   const act = spaceAction({ running, paused, results: $('results').classList.contains('show'), celebrating: Boolean(celebrate) });
   if (act === 'skip') skipCelebration();
@@ -611,6 +732,7 @@ function onSpace() {
 
 // Restart the current match from scratch: same seed and roster (or the same replay log).
 function restart() {
+  if (countdown.active) { countdown.skip(); return; }
   if (mode === 'replay' && !replayLog) { toast('Pick a saved log or load a file first'); return; }
   start();
 }
@@ -641,13 +763,17 @@ function clearPause() {
 
 function updateControls() {
   const b = $('start');
-  b.textContent = !running ? 'Start [space]' : paused ? 'Resume [space]' : 'Pause [space]';
+  b.textContent = countdown.active ? 'Fight [space]' : !running ? 'Start [space]' : paused ? 'Resume [space]' : 'Pause [space]';
   b.classList.toggle('go', !running || paused);
   $('pauseChip').classList.toggle('show', paused);
   document.body.classList.toggle('paused', paused);
 }
 
 function start() {
+  if (countdown.active) { countdown.skip(); return; }
+  if (liveStarting) return;
+  if (warmupActive) { toast('Warm-up is still running. Start when it finishes.'); return; }
+  cancelWarmup();
   view = null; viewMatch = null; viewStats = null;
   hideResults();
   celebrate = null;
@@ -668,7 +794,8 @@ function start() {
     startLive();
     return;
   } else if (!beginMatch()) return;
-  launch();
+  if (mode === 'replay') launch();
+  else { countdown.start(); updateControls(); }
 }
 
 // A live match asks the server first: it checks the fighters and models, the rate limit and the spend
@@ -676,14 +803,21 @@ function start() {
 async function startLive() {
   if (liveStarting) return;
   liveStarting = true;
+  const requestId = ++matchId;
   try {
     preview();
     if (roster.length < 2) return;
     const models = Object.fromEntries(roster.filter((id) => slotModel(id)).map((id) => [id, slotModel(id)]));
+    const prepared = { roster: [...roster], models, seed: match.seed, weapons: match.weapons };
     await endingMatch;
+    if (requestId !== matchId || mode !== 'live') return;
     const resp = await fetch('/api/match/start', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fighters: roster, models, seed: Number($('seed').value) | 0, weapons: weaponCfg }) });
-    if (mode !== 'live' || running) return;
+      body: JSON.stringify({ fighters: prepared.roster, models: prepared.models, seed: prepared.seed, weapons: prepared.weapons }) });
+    if (requestId !== matchId || mode !== 'live' || running || countdown.active) {
+      const stale = await resp.json().catch(() => ({}));
+      if (stale.matchToken) endLiveMatch(stale.matchToken);
+      return;
+    }
     if (resp.status === 404) matchToken = null; // an older proxy without match start
     else {
       const j = await resp.json().catch(() => ({}));
@@ -695,28 +829,31 @@ async function startLive() {
       matchToken = j.matchToken || null;
     }
     notice(null);
-    if (beginMatch()) launch();
+    if (beginMatch(prepared)) { countdown.start(); updateControls(); }
   } catch (e) {
     toast(`Could not start a live match: ${e.message}`);
   } finally { liveStarting = false; }
 }
 
-function beginMatch() {
-  preview();
+function beginMatch(prepared = null) {
+  if (prepared) {
+    roster = prepared.roster;
+    log = null;
+    match = createMatch(prepared);
+  } else preview();
   if (roster.length < 2) return false;
   matchId++;
   queue = [];
   log = { version: 1, modelAims: Boolean(match.weapons.modelAims), mode, seed: match.seed, createdAt: new Date().toISOString(), bot: roster.includes('bot'),
-    roster: roster.map((id) => ({ ...rosterEntry(id), kind: rosterById[id].kind, ...pickedEntry(id) })),
+    roster: roster.map((id) => ({ ...rosterEntry(id), kind: rosterById[id].kind, ...pickedEntry(id, prepared ? prepared.models[id] : slotModel(id)) })),
     weapons: match.weapons, weaponsId: match.cfgId, weaponsSummary: configSummary(match.weapons),
     decisions: [] };
+  buildPanels(); // now uses the frozen log identities
   ctl = Object.fromEntries(roster.map((id) => [id, { lastAsk: -1e9, pending: false, since: 0 }]));
-  for (const id of roster) ask(id, matchId);
   return true;
 }
 // A picked model is recorded in the log (and its prompt variant), so a replay names what really played.
-function pickedEntry(id) {
-  const m = slotModel(id);
+function pickedEntry(id, m) {
   if (!m) return {};
   const same = ROSTER.find((r) => r.model === m && r.kind !== 'bot');
   return { model: m, picked: true, prompt: same ? promptVariant(same) : 'full', kind: same ? same.kind : 'chat' };
@@ -724,9 +861,12 @@ function pickedEntry(id) {
 
 function launch() {
   running = true; acc = 0; lastFrame = performance.now();
-  effects.push({ type: 'banner', text: 'FIGHT!', life: 45 });
-  audio.sfx.start();
+  if (mode === 'replay' || !fightSoundPlayed) {
+    effects.push({ type: 'banner', text: 'FIGHT!', life: 45 });
+    audio.sfx.start();
+  }
   updateControls();
+  if (mode !== 'replay') for (const id of roster) ask(id, matchId);
 }
 
 // Hand an unfinished hosted match back, so its unused budget is released straight away.
@@ -740,10 +880,12 @@ function endLiveMatch(tok = matchToken, { beacon = false } = {}) {
   if (beacon) try { sent = Boolean(navigator.sendBeacon?.('/api/match/end', new Blob([body], { type: 'text/plain' }))); } catch {}
   if (!sent) endingMatch = fetch('/api/match/end', { method: 'POST', body, keepalive: true }).catch(() => {});
 }
-addEventListener('pagehide', () => { if (running && mode === 'live') endLiveMatch(matchToken, { beacon: true }); });
+addEventListener('pagehide', () => { if ((running || countdown.active) && mode === 'live') endLiveMatch(matchToken, { beacon: true }); });
 
 function stop() {
-  if (mode === 'live' && running) endLiveMatch();
+  cancelWarmup();
+  if (mode === 'live' && (running || countdown.active)) endLiveMatch();
+  countdown.cancel();
   view = null; viewMatch = null; viewStats = null; updateViewUi();
   running = false;
   clearPause();
@@ -764,7 +906,7 @@ function scheduleNext(id, mid) {
 }
 
 async function ask(id, mid) {
-  if (mid !== matchId) return;
+  if (mid !== matchId || !running || countdown.active) return;
   if (paused) { deferred.add(id); return; } // no new calls while paused; sent on resume
   const f = match.fighters.find((x) => x.id === id);
   if (!f || !f.alive || match.over) return;
@@ -796,7 +938,7 @@ async function ask(id, mid) {
     try {
       const resp = await fetch('/api/decide', { method: 'POST', signal: ac.signal,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fighter: id, scene, weapons: match.weapons, matchToken: matchToken || undefined, model: slotModel(id) || undefined }) });
+        body: JSON.stringify({ fighter: id, scene, weapons: match.weapons, matchToken: matchToken || undefined, model: log?.roster.find((r) => r.id === id && r.picked)?.model || undefined }) });
       const j = await resp.json();
       ms = performance.now() - t0;
       if (j.budget) updateBudget(j.budget);
@@ -914,11 +1056,10 @@ function finishMatch() {
   fetch('/api/logs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(log) })
     .then((r) => r.json()).then((j) => toast(j.name ? `Saved logs/${j.name}` : 'Match log not kept on this server; use Download on the results screen'))
     .catch(() => toast('Could not save log to server; use Download'));
-  // All-time leaderboard: live matches always; mock only while "Include mock" is ticked. A match with a
-  // picked model is never recorded: the board is per roster fighter, and that slot ran something else.
-  const rec = buildRecord({ state: match, mode, weapons: match.weapons, stats });
-  const anyPicked = log.roster.some((r) => r.picked);
-  const recordable = (mode === 'live' || (mode === 'mock' && lbIncludeMock && !serverStatus?.hosted)) && !anyPicked;
+  // Records retain the actual models, so gateway picks have their own leaderboard identity.
+  const rec = buildRecord({ state: match, mode, weapons: match.weapons, stats,
+    models: Object.fromEntries(log.roster.map((r) => [r.id, r.model])) });
+  const recordable = mode === 'live' || (mode === 'mock' && lbIncludeMock && !serverStatus?.hosted);
   // The hosted site builds the record itself from the decisions (re-run and checked on the server).
   const recBody = serverStatus?.hosted && mode === 'live'
     ? { decisions: log.decisions.map(({ t, f, a, err }) => ({ t, f, a, err })) } : rec; // stats come from the server's own record
@@ -931,8 +1072,8 @@ function finishMatch() {
       .catch((e) => { toast(`Leaderboard not saved (${e.message})${serverStatus?.hosted ? '' : '; restart the server?'}`); if (serverStatus?.hosted) { endLiveMatch(tok); return endingMatch; } });
     if (mode === 'live' && serverStatus?.hosted) endingMatch = saved; // recording closes the match
   }
-  celebrateThenResults(allDown ? 'ALL DOWN' : `${rosterById[match.winner].name} WINS`,
-    `${allDown ? `${rosterById[match.winner].name} ranked first, ` : ''}${rec.note}; seed ${match.seed}, ${mode} mode, ${roster.length} fighters ${roster.includes('bot') ? 'with' : 'without'} bot, ${(match.tick / TICK_HZ).toFixed(1)} s; weapons: ${configSummary(match.weapons)}`, true);
+  celebrateThenResults(allDown ? 'ALL DOWN' : `${shownName(match.winner)} WINS`,
+    `${allDown ? `${shownName(match.winner)} ranked first, ` : ''}${rec.note}; seed ${match.seed}, ${mode} mode, ${roster.length} fighters ${roster.includes('bot') ? 'with' : 'without'} bot, ${(match.tick / TICK_HZ).toFixed(1)} s; weapons: ${configSummary(match.weapons)}`, true);
 }
 
 // Winner celebration, then the results table. Everyone down: straight to the stats, no fanfare.
@@ -993,7 +1134,7 @@ function drawCelebration(now) {
   const k = still ? 1 : Math.min(1, el / 520);
   const pop = still ? 1 : 1 + 2.70158 * Math.pow(k - 1, 3) + 1.70158 * Math.pow(k - 1, 2); // ease-out-back
   const bob = still ? 0 : Math.sin(el / 260) * 6;
-  const spr = spriteCanvases(C.id);
+  const spr = spriteCanvases(shownIcon(C.id));
   const size = 18 * 8 * pop, cx = 400, cy = 250 + bob;
   ov.fillStyle = '#0b0b12'; ov.strokeStyle = r.colour; ov.lineWidth = 6;
   ov.shadowColor = r.colour; ov.shadowBlur = still ? 18 : 18 + 10 * Math.sin(el / 200);
@@ -1001,7 +1142,7 @@ function drawCelebration(now) {
   ov.shadowBlur = 0;
   if (spr) { ov.imageSmoothingEnabled = false; ov.drawImage(spr.normal, cx - size / 2, cy - size / 2, size, size); }
   // headline in the winner's colour, shrunk to fit
-  const text = `${r.name.toUpperCase()} WINS!`;
+  const text = `${shownName(C.id).toUpperCase()} WINS!`;
   ov.textAlign = 'center'; ov.textBaseline = 'alphabetic';
   let fs = 64; ov.font = `bold ${fs}px monospace`;
   while (ov.measureText(text).width > 740 && fs > 28) { fs -= 2; ov.font = `bold ${fs}px monospace`; }
@@ -1024,7 +1165,7 @@ function showResults(title, sub, countWins) {
   const rows = match.ranking.map((id, i) => {
     const f = match.fighters.find((x) => x.id === id), s = stats[id], r = rosterById[id];
     const secs = Math.max(1, ((f.deathTick ?? match.tick)) / TICK_HZ);
-    return `<tr><td>${i + 1}</td><td style="color:${r.colour}"><img class="sprite rs" alt="" style="box-shadow:0 0 0 2px ${r.colour}" src="${spriteDataUrl(id, 24)}">${r.name} <span style="color:var(--dim);font-size:10px">${esc(shownModel(id))}</span></td>
+    return `<tr><td>${i + 1}</td><td style="color:${r.colour}"><img class="sprite rs" alt="" style="box-shadow:0 0 0 2px ${r.colour}" src="${spriteDataUrl(shownIcon(id), 24)}">${esc(shownName(id))} <span style="color:var(--dim);font-size:10px">${esc(shownModel(id))}</span></td>
       <td>${Math.max(0, f.hp)}</td><td>${f.kills}</td><td>${wins[id] || 0}</td><td>${s.decisions}</td>
       <td>${(s.decisions / secs).toFixed(1)}</td><td>${fmtMs(median(s.lat))}</td><td>${s.errors}</td>
       <td>${f.shots ? Math.round((f.hits / f.shots) * 100) + '%' : '-'}</td><td>${r.kind === 'bot' ? '-' : `${s.costEst ? '~' : ''}$${s.cost.toFixed(5)}`}</td></tr>`;
@@ -1042,25 +1183,45 @@ function downloadLog(l) {
   a.click();
 }
 
+let warmupAbort = null, warmupRun = 0, warmupActive = false;
+function cancelWarmup() { warmupRun++; warmupAbort?.abort(); warmupAbort = null; }
 async function warmUp() {
+  if (countdown.active) { countdown.skip(); return; }
   if (!serverStatus?.keyLoaded) { toast('No key loaded in the proxy'); return; }
-  const m = createMatch({ seed: 1, roster: ROSTER.map((r) => r.id), weapons: weaponCfg });
+  if (warmupActive) { toast('Warm-up is already running'); return; }
+  cancelWarmup();
+  warmupActive = true;
+  try {
+  const run = warmupRun;
+  const ids = selectedRoster();
+  const m = createMatch({ seed: 1, roster: ids, weapons: weaponCfg });
+  const entries = ids.filter((id) => rosterById[id].kind !== 'bot').map((id) => ({
+    ...rosterById[id], model: slotModel(id) || rosterById[id].model,
+  }));
   const lines = [];
-  for (const r of ROSTER.filter((x) => x.kind !== 'bot' && enabled.has(x.id))) {
+  for (const r of entries) {
     const times = [];
     for (let i = 0; i < 3; i++) {
+      if (run !== warmupRun || countdown.active) return;
       const t0 = performance.now();
+      warmupAbort = new AbortController();
       try {
-        const resp = await fetch('/api/decide', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fighter: r.id, scene: sceneFor(m, r.id), weapons: m.weapons }) });
+        const resp = await fetch('/api/decide', { method: 'POST', signal: warmupAbort.signal,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fighter: r.id, model: r.model, scene: sceneFor(m, r.id), weapons: m.weapons }) });
         const j = await resp.json();
+        if (run !== warmupRun) return;
         if (j.budget) updateBudget(j.budget);
         times.push(resp.ok ? `${Math.round(performance.now() - t0)}ms` : `ERR ${String(j.error).slice(0, 50)}`);
-      } catch (e) { times.push(`ERR ${e.message}`); }
+      } catch (e) {
+        if (run !== warmupRun) return;
+        times.push(`ERR ${e.message}`);
+      }
     }
-    lines.push(`${r.name}: ${times.join(', ')}`);
+    lines.push(`${fighterIdentity(rosterById[r.id], r.model).name}: ${times.join(', ')}`);
     toast(`Warm up\n${lines.join('\n')}`, 8000);
   }
+  } finally { warmupActive = false; warmupAbort = null; }
 }
 
 // ---------- rendering
@@ -1117,8 +1278,8 @@ function collectEffects() {
     if (e.type === 'spark') for (let k = 0; k < 3; k++) effects.push({ type: 'p', x: e.x, y: e.y, vx: (Math.random() - 0.5) * 2, vy: (Math.random() - 0.5) * 2, life: 6, c: '#ffd' });
     if (e.type === 'death') {
       for (let k = 0; k < 30; k++) effects.push({ type: 'p', x: e.x, y: e.y, vx: (Math.random() - 0.5) * 5, vy: (Math.random() - 0.5) * 5, life: 25, c: Math.random() < 0.5 ? '#ff8a00' : '#ffe14d' });
-      const by = e.by === e.id ? 'OWN MISSILE' : e.by ? rosterById[e.by]?.name : 'THE RING';
-      effects.push({ type: 'banner', text: `${rosterById[e.id].name} DOWN (${by})`, life: 60 });
+      const by = e.by === e.id ? 'OWN MISSILE' : e.by ? shownName(e.by) : 'THE RING';
+      effects.push({ type: 'banner', text: `${shownName(e.id)} DOWN (${by})`, life: 60 });
     }
     if (e.type === 'pickup') effects.push({ type: 'text', x: e.x, y: e.y, text: `+${WLABEL[e.kind] || e.kind.toUpperCase()}`, life: 30 });
   }
@@ -1160,7 +1321,7 @@ function drawLogoFighter(f, colour, flashing) {
   // team ring
   world.strokeStyle = '#000'; world.lineWidth = 4; world.beginPath(); world.arc(x, y, 10.5, 0, Math.PI * 2); world.stroke();
   world.strokeStyle = flashing ? '#fff' : colour; world.lineWidth = 2; world.beginPath(); world.arc(x, y, 10.5, 0, Math.PI * 2); world.stroke();
-  const spr = spriteCanvases(f.id);
+  const spr = spriteCanvases(shownIcon(f.id));
   world.imageSmoothingEnabled = false;
   if (spr) world.drawImage(flashing ? spr.flash : spr.normal, x - SPR_HALF, y - SPR_HALF);
 }
@@ -1281,8 +1442,8 @@ function render() {
       ov.beginPath(); ov.arc(x, y, PR, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * frac); ov.stroke();
     }
     ov.font = 'bold 13px monospace';
-    ov.fillStyle = '#000'; ov.fillText(r.name, x + 1, y - 31 - LY);
-    ov.fillStyle = r.colour; ov.fillText(r.name, x, y - 32 - LY);
+    ov.fillStyle = '#000'; ov.fillText(shownName(f.id), x + 1, y - 31 - LY);
+    ov.fillStyle = r.colour; ov.fillText(shownName(f.id), x, y - 32 - LY);
     // hp bar
     ov.fillStyle = '#300'; ov.fillRect(x - 18, y - 28 - LY, 36, 4);
     ov.fillStyle = f.hp < 35 ? '#f44' : '#4f4'; ov.fillRect(x - 18, y - 28 - LY, 36 * Math.max(0, f.hp) / MAX_HP, 4);
@@ -1303,7 +1464,7 @@ function render() {
   if (celebrate) drawCelebration(performance.now());
   else if (match.over && !running) {
     ov.font = 'bold 30px monospace'; ov.fillStyle = '#ffe14d';
-    ov.fillText(match.fighters.every((f) => !f.alive) ? 'ALL DOWN' : `${rosterById[match.winner].name} WINS`, 400, 400);
+    ov.fillText(match.fighters.every((f) => !f.alive) ? 'ALL DOWN' : `${shownName(match.winner)} WINS`, 400, 400);
   }
   if (paused && !view) { // while viewing, the bar under the arena says it instead
     ov.fillStyle = 'rgba(0,0,0,0.6)'; ov.fillRect(300, 740, 200, 44); // bottom, clear of the banners at the top
@@ -1393,7 +1554,15 @@ async function openLeaderboard() {
   }
   renderLeaderboard();
 }
-const fighterCell = (id) => { const r = Object.hasOwn(rosterById, id) ? rosterById[id] : null; return r ? `<span style="color:${r.colour}">${r.name}</span>` : esc(id); };
+const fighterCell = (fighter) => {
+  const f = typeof fighter === 'string' ? { id: fighter } : fighter;
+  if (!f) return '-';
+  const id = f.slotId || f.id;
+  const r = Object.hasOwn(rosterById, id) ? rosterById[id] : null;
+  if (!r) return esc(f.model || f.id);
+  const identity = recordFighterIdentity(f);
+  return `<span style="color:${r.colour}"><img class="sprite rs" alt="" src="${spriteDataUrl(identity.iconId, 24)}">${esc(identity.name)}</span>`;
+};
 function renderLeaderboard() {
   if (!lbData) return;
   const opts = { includeMock: lbIncludeMock, cfgId: lbCurrentOnly ? configId(weaponCfg) : null };
@@ -1405,12 +1574,12 @@ function renderLeaderboard() {
     $('lbBody').innerHTML = `<p class="dim">No ${lbIncludeMock ? '' : 'live '}matches recorded${lbCurrentOnly ? ' with the current weapons' : ''} yet.</p>`;
     return;
   }
-  const t = rows.map((a, i) => `<tr><td>${i + 1}</td><td>${fighterCell(a.id)}${topKills.includes(a.id) ? ' <span class="lbBadge" title="Most total kills">most kills</span>' : ''}</td><td>${esc(a.played)}</td><td>${esc(a.wins)}</td>
+  const t = rows.map((a, i) => `<tr><td>${i + 1}</td><td>${fighterCell(a)}${topKills.includes(a.id) ? ' <span class="lbBadge" title="Most total kills">most kills</span>' : ''}</td><td>${esc(a.played)}</td><td>${esc(a.wins)}</td>
     <td>${Math.round(a.winRate * 100)}%</td><td>${a.avgPlace.toFixed(2)}</td><td>${a.avgSurvivalS.toFixed(1)} s</td>
     <td${topKills.includes(a.id) ? ' class="lbTop"' : ''}>${esc(a.kills)}</td><td>${esc(a.damage)}</td><td>${esc(fmtMs(a.meanMs))}</td><td>${esc(a.errors)}</td><td>${esc(a.timeouts)}</td>
     <td>${fmtUsd(a.totalCost, a.costEst)}</td><td>${fmtUsd(a.avgCostGame, a.costEst)}</td><td>${fmtUsd(a.costPerCall, a.costEst)}</td></tr>`).join('');
   const recent = [...recs].reverse().slice(0, 12).map((m) => `<tr><td>${new Date(m.ts).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</td>
-    <td>${fighterCell(m.winner)} <span class="dim">${esc(m.note)}</span></td><td>${esc(m.mode)}</td><td>${Number(m.fighters?.length) || 0}</td><td>${esc(m.seed)}</td>
+    <td>${fighterCell(m.fighters.find((f) => f.id === m.winner))} <span class="dim">${esc(m.note)}</span></td><td>${esc(m.mode)}</td><td>${Number(m.fighters?.length) || 0}</td><td>${esc(m.seed)}</td>
     <td class="dim" title="${esc(m.cfgSummary)}">${esc(m.cfgId)} (${m.modelAims ? 'aims ON' : 'aims OFF'})</td></tr>`).join('');
   $('lbBody').innerHTML = `<p class="dim">${recs.length} match${recs.length === 1 ? '' : 'es'}${lbIncludeMock ? ', live and mock' : ', live only'}${lbCurrentOnly ? `, weapons ${configId(weaponCfg)}` : ', all weapon configs'}. Cost: ~ includes estimates; per request = total cost / requests sent; matches recorded before cost tracking show -.</p>
     <table id="lbTable"><tr><th>#</th><th>Fighter</th>${LB_COLS.map(([k, n]) => `<th class="lbSort" data-k="${k}" title="Sort by ${n}">${n}${lbSort?.key === k ? (lbSort.dir === 1 ? ' &#9660;' : ' &#9650;') : ''}</th>`).join('')}</tr>${t}</table>
@@ -1418,8 +1587,14 @@ function renderLeaderboard() {
     <table id="lbRecent"><tr><th>When</th><th>Winner</th><th>Mode</th><th>Fighters</th><th>Seed</th><th>Weapons</th></tr>${recent}</table>`;
   const aims = recs.filter((m) => m.modelAims);
   if (aims.length) {
-    const ids = ROSTER.filter((r) => aims.some((m) => m.fighters.some((f) => f.id === r.id))).map((r) => r.id);
-    $('lbBody').insertAdjacentHTML('beforeend', `<h3>Who targets whom (choices)</h3><table id="lbTargets"><tr><th>Shooter / target</th>${ids.map((id) => `<th>${fighterCell(id)}</th>`).join('')}</tr>${ids.map((id) => `<tr><th>${fighterCell(id)}</th>${ids.map((target) => `<td>${id === target ? '-' : esc(aims.reduce((n, m) => n + (Number(m.fighters.find((f) => f.id === id)?.targetsChosen?.[target]) || 0), 0))}</td>`).join('')}</tr>`).join('')}</table>`);
+    const key = (f) => f.model && f.model !== rosterById[f.id]?.model ? f.model : f.id;
+    const fighters = [...new Map(aims.flatMap((m) => m.fighters.map((f) => [key(f), f]))).values()];
+    const choices = (shooter, target) => aims.reduce((n, m) => {
+      const sf = m.fighters.find((f) => key(f) === key(shooter));
+      const tf = m.fighters.find((f) => key(f) === key(target));
+      return n + (sf && tf ? Number(sf.targetsChosen?.[tf.id]) || 0 : 0);
+    }, 0);
+    $('lbBody').insertAdjacentHTML('beforeend', `<h3>Who targets whom (choices)</h3><table id="lbTargets"><tr><th>Shooter / target</th>${fighters.map((f) => `<th>${fighterCell(f)}</th>`).join('')}</tr>${fighters.map((f) => `<tr><th>${fighterCell(f)}</th>${fighters.map((target) => `<td>${key(f) === key(target) ? '-' : esc(choices(f, target))}</td>`).join('')}</tr>`).join('')}</table>`);
   }
   document.querySelectorAll('#lbTable th.lbSort').forEach((th) => {
     th.onclick = () => {
@@ -1447,5 +1622,5 @@ requestAnimationFrame(frame);
 updateControls();
 if (params.get('autostart') === '1' && mode !== 'live') setTimeout(start, 300); // for kiosk demos and headless screenshots
 window.__arena = { get weapons() { return weaponCfg; }, get match() { return match; }, get log() { return lastLog; }, get liveLog() { return log; }, get mode() { return mode; },
-  get running() { return running; }, get paused() { return paused; }, get celebrating() { return Boolean(celebrate); }, get roster() { return roster; }, get queued() { return queue.length; },
+  get running() { return running; }, get countingDown() { return countdown.active; }, get paused() { return paused; }, get celebrating() { return Boolean(celebrate); }, get roster() { return roster; }, get queued() { return queue.length; },
   get view() { return view; }, get viewMatch() { return viewMatch; }, get history() { return hist; } };

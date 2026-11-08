@@ -59,7 +59,7 @@ test('the bot is off by default; with or without it, the log records the roster 
 });
 
 test('different seeds rotate spawns', () => {
-  const ids = ROSTER.map((r) => r.id);
+  const ids = ROSTER.slice(0, MAX_FIGHTERS).map((r) => r.id);
   const a = createMatch({ seed: 1, roster: ids }), b = createMatch({ seed: 2, roster: ids });
   assert.notDeepEqual([a.fighters[0].x, a.fighters[0].y], [b.fighters[0].x, b.fighters[0].y]);
 });
@@ -172,7 +172,7 @@ test('incoming: a missile counts by its blast, an enemy flamethrower pointing at
 });
 
 test('every model gets the same state text; requests use the documented shapes', () => {
-  const s = createMatch({ seed: 3, roster: ROSTER.map((r) => r.id) });
+  const s = createMatch({ seed: 3, roster: ROSTER.slice(0, MAX_FIGHTERS).map((r) => r.id) });
   const scene = sceneFor(s, 'jev');
   const jev = buildRequest(rosterById.jev, scene), luna = buildRequest(rosterById.luna, scene);
   const gem = buildRequest(rosterById.gemini, scene);
@@ -233,10 +233,11 @@ test('roster: four classifiers by default, Gemini and the bot opt-in, up to six 
   assert.equal(rosterById.gemini.on, false);
   assert.equal(rosterById.bot.on, false);
   assert.equal(MAX_FIGHTERS, 6);
-  assert.equal(ROSTER.length, 6);
+  assert.equal(ROSTER.filter((r) => !r.gatewaySlot).length, 6);
+  assert.equal(ROSTER.filter((r) => r.gatewaySlot).length, 5);
   for (const r of ROSTER) assert.match(r.colour, /^#[0-9a-f]{6}$/i);
   assert.equal(new Set(ROSTER.map((r) => r.colour)).size, ROSTER.length, 'distinct colours');
-  const all = ROSTER.map((r) => r.id);
+  const all = ROSTER.slice(0, MAX_FIGHTERS).map((r) => r.id);
   const s = createMatch({ seed: 4, roster: all });
   const spots = new Set(s.fighters.map((f) => `${Math.round(f.x)},${Math.round(f.y)}`));
   assert.equal(spots.size, 6, 'six distinct spawns');
@@ -393,7 +394,7 @@ test('Laya worst-case question (state + instructions + criteria) is under the to
   assert.equal(checkBudget(rosterById.laya, text).over, false);
   assert.equal(checkBudget(rosterById.laya, text + 'x'.repeat(400), 0).over, true, 'guard flags an oversized prompt');
   // a real six-fighter scene from the sim is smaller than the synthetic worst case
-  const s = createMatch({ seed: 2, roster: ROSTER.map((r) => r.id), weapons: WORST_WEAPONS });
+  const s = createMatch({ seed: 2, roster: ROSTER.slice(0, MAX_FIGHTERS).map((r) => r.id), weapons: WORST_WEAPONS });
   assert.ok(compactStateText(sceneFor(s, 'laya'), WORST_WEAPONS).length <= text.length);
 });
 
@@ -711,7 +712,7 @@ test('model aims: OFF keeps hashes and prompts; ON records targets and replays e
     assert.ok(!log.weapons.modelAims);
   }
   for (const seed of [1, 42]) {
-    const { log } = runHeadlessMock({ seed, modelAims: true, roster: ROSTER.map((r) => r.id) });
+    const { log } = runHeadlessMock({ seed, modelAims: true, roster: ROSTER.slice(0, MAX_FIGHTERS).map((r) => r.id) });
     assert.equal(log.modelAims, true);
     assert.ok(log.decisions.some((d) => d.a?.startsWith('shoot_')));
     assert.ok(!log.decisions.some((d) => d.a === 'shoot'));
@@ -795,4 +796,33 @@ test('model aims: leaderboard retains per-shooter target-choice counts only when
   assert.deepEqual(rec.fighters[0].targetsChosen, { luna: 3 });
   assert.deepEqual(rec.fighters[1].targetsChosen, {});
   assert.match(rec.cfgSummary, /model aims ON/);
+});
+
+
+test('six picked gateway slots spawn distinctly and replay deterministically', () => {
+  const roster = ['gemini', 'gw1', 'gw2', 'gw3', 'gw4', 'gw5'];
+  const state = createMatch({ seed: 4, roster });
+  assert.equal(new Set(state.fighters.map((f) => `${f.x},${f.y}`)).size, MAX_FIGHTERS);
+  for (const f of state.fighters) for (const other of state.fighters) if (f !== other)
+    assert.ok(Math.hypot(f.x - other.x, f.y - other.y) > 2 * FIGHTER_R);
+  const { log } = runHeadlessMock({ seed: 3, roster });
+  assert.equal(hashState(runLog(clone(log))), log.result.hash);
+});
+
+test('leaderboard persists model identity and groups models across slots without merging different picks', () => {
+  const record = (slot, model) => {
+    const state = createMatch({ seed: 1, roster: [slot, 'jev'] });
+    state.tick = 2700; state.over = true; state.ranking = [slot, 'jev']; state.winner = slot;
+    return cleanRecord(buildRecord({ state, mode: 'live', stats: { [slot]: { calls: 2, cost: .004 } }, models: { [slot]: model } }));
+  };
+  const a = record('gemini', 'anthropic/claude-sonnet-5.5'), b = record('gw1', 'anthropic/claude-sonnet-5.5');
+  const c = record('gemini', 'openai/gpt-6');
+  assert.equal(a.fighters[0].model, 'anthropic/claude-sonnet-5.5');
+  const rows = aggregate([a, b, c]);
+  const claude = rows.find((r) => r.model === 'anthropic/claude-sonnet-5.5');
+  assert.equal(claude.played, 2); assert.equal(claude.wins, 2); assert.equal(claude.totalCost, .008);
+  assert.equal(rows.find((r) => r.model === 'openai/gpt-6').played, 1);
+  const legacy = { ...a, fighters: a.fighters.map(({ model, ...f }) => f) };
+  assert.equal(aggregate([legacy]).find((r) => r.id === 'gemini').played, 1);
+  assert.equal(cleanRecord({ ...a, fighters: a.fighters.map((f) => ({ ...f, model: '<script>alert(1)</script>' })) }).fighters[0].model, undefined);
 });

@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_ROSTER, rosterById, actionsFor, median } from '../public/shared.js';
+import { DEFAULT_ROSTER, rosterById, actionsFor, median, MAX_FIGHTERS } from '../public/shared.js';
 import { createMatch, applyAction, step, sceneFor, hashState, runLog, TICK_HZ } from '../public/sim.js';
 import { rosterEntry } from '../public/brain.js';
 import { DEFAULT_WEAPON_CONFIG, normaliseWeapons, configId, configSummary } from '../public/weapons.js';
@@ -47,8 +47,8 @@ export function parseArgs(args) {
   for (const key of ['matches', 'parallel', 'seedStart']) if (!Number.isSafeInteger(o[key])) throw new Error(`${key} must be an integer`);
   if (o.seedStart + o.matches > 1e9) throw new Error('seeds must stay below 1e9 (leaderboard range)');
   if (typeof o.fighters === 'string') o.fighters = o.fighters.split(',');
-  if (o.fighters.length < 2 || o.fighters.length > 5 || new Set(o.fighters).size !== o.fighters.length ||
-    o.fighters.some((id) => !rosterById[id] || id === 'bot')) throw new Error('choose 2 to 5 distinct model fighters');
+  if (o.fighters.length < 2 || o.fighters.length > MAX_FIGHTERS || new Set(o.fighters).size !== o.fighters.length ||
+    o.fighters.some((id) => !rosterById[id] || id === 'bot')) throw new Error(`choose 2 to ${MAX_FIGHTERS} distinct model fighters`);
   if (!['on', 'off'].includes(o.aim) || o.weapons !== 'default') throw new Error('use --aim on|off and --weapons default (or --config file)');
   const url = new URL(o.server);
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error('server must be HTTP(S)');

@@ -1,3 +1,5 @@
+import { companyForModel, fighterIdentity, iconIdForModel } from './model-icons.js';
+
 // Shared first-run and Settings dialog, with Fighters, Gameplay and Sound tabs.
 // The controls inside keep the ids and wiring they had in the header (game.js), so moving them here
 // changes nothing about what they set. This file only adds the dialog behaviour: tabs with arrow keys,
@@ -33,26 +35,31 @@ export const MIN_FIGHTERS = 2; // the page will not start a match with fewer
 export function fighterRows({ roster, enabled, picked = {}, pickerOn = false }) {
   return roster.filter((r) => enabled.has(r.id)).map((r) => {
     const gw = pickerOn && r.kind !== 'bot' && picked[r.id] ? picked[r.id] : null;
-    return { slot: r.id, name: r.name, colour: r.colour, model: gw || r.model, gateway: Boolean(gw), bot: r.kind === 'bot' };
+    return { slot: r.id, ...fighterIdentity(r, gw || r.model), colour: r.colour, model: gw || r.model, gateway: Boolean(gw), bot: r.kind === 'bot' };
   });
 }
 
-// A free slot for a gateway model: a chat slot first (the Gemini baseline's), then any other model slot.
+// Fill spare gateway slots first, preserving the built-in Gemini choice for mixed line-ups.
 function freeSlot(roster, enabled) {
   const free = roster.filter((r) => r.kind !== 'bot' && !enabled.has(r.id));
-  return (free.find((r) => r.kind === 'chat') || free[0])?.id ?? null;
+  return (free.find((r) => r.gatewaySlot) || free.find((r) => r.kind === 'chat') || free[0])?.id ?? null;
 }
 
 // What the Add list offers: roster fighters not in play, and (picker on, a model slot free) the gateway
 // models not already playing. Empty at the maximum.
-export function addableOptions({ roster, enabled, picked = {}, models = [], pickerOn = false, max }) {
+export function addableOptions({ roster, enabled, picked = {}, models = [], pickerOn = false, max, query = '' }) {
   if (enabled.size >= max) return { fighters: [], models: [] };
-  const fighters = roster.filter((r) => !enabled.has(r.id))
-    .map((r) => ({ value: `slot:${r.id}`, label: r.kind === 'bot' ? 'Scripted bot (control)' : `${r.name} (${r.model})` }));
+  const matches = (...values) => values.join(' ').toLowerCase().includes(query.trim().toLowerCase());
+  const fighters = roster.filter((r) => !r.gatewaySlot && !enabled.has(r.id) && matches(r.name, r.id, r.model, companyForModel(r.model)))
+    .map((r) => ({ value: `slot:${r.id}`, label: r.kind === 'bot' ? 'Scripted bot (control)' : `${r.name} (${r.model})`,
+      name: r.kind === 'bot' ? 'Scripted bot' : r.name, model: r.model,
+      company: r.kind === 'bot' ? 'Local' : companyForModel(r.model), iconId: r.kind === 'bot' ? r.id : iconIdForModel(r.model) }));
   if (!pickerOn || !freeSlot(roster, enabled)) return { fighters, models: [] };
   const playing = new Set(roster.filter((r) => enabled.has(r.id)).map((r) => picked[r.id] || r.model));
   const rosterModels = new Set(roster.map((r) => r.model));
-  return { fighters, models: models.filter((m) => !rosterModels.has(m.id) && !playing.has(m.id)).map((m) => ({ value: `model:${m.id}`, label: m.id })) };
+  return { fighters, models: models.filter((m) => !rosterModels.has(m.id) && !playing.has(m.id) && matches(m.name || '', m.id, companyForModel(m.id)))
+    .map((m) => ({ value: `model:${m.id}`, label: `${m.name || m.id.split('/').pop()} (${companyForModel(m.id)}) - ${m.id}`,
+      name: m.name || m.id.split('/').pop(), model: m.id, company: companyForModel(m.id), iconId: iconIdForModel(m.id) })) };
 }
 
 // Apply an Add choice. Returns the new { enabled, picked }, or null if it cannot be added.
@@ -61,7 +68,7 @@ export function applyAdd(value, { roster, enabled, picked = {}, max }) {
   const en = new Set(enabled), pk = { ...picked };
   if (value.startsWith('slot:')) {
     const id = value.slice(5);
-    if (!roster.some((r) => r.id === id) || en.has(id)) return null;
+    if (!roster.some((r) => r.id === id && !r.gatewaySlot) || en.has(id)) return null;
     en.add(id); delete pk[id]; // a roster fighter plays its own model
     return { enabled: en, picked: pk };
   }

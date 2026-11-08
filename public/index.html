@@ -21,6 +21,8 @@
   header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 2px solid var(--line); background: #0c0c16; }
   h1 .sub { font-size: 11px; letter-spacing: 1px; color: #9aa; text-shadow: none; margin-left: 6px; }
   h1 { font-size: 18px; margin: 0 12px 0 0; letter-spacing: 2px; color: var(--hot); text-shadow: 2px 2px 0 #b02a6a; white-space: nowrap; }
+  #countdown canvas { width: min(90vw, 720px); height: auto; image-rendering: pixelated; image-rendering: crisp-edges; }
+  #countdown .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .grp { display: flex; align-items: center; gap: 4px; font-size: 12px; }
   button, select, input { font-family: var(--font); font-size: 12px; background: #1b1b2b; color: var(--ink); border: 2px solid var(--line); padding: 3px 8px; text-transform: uppercase; }
   button:hover { border-color: var(--hot); }
@@ -157,7 +159,18 @@
   .flist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .setup-row button:disabled, .fadd button:disabled { opacity: 0.4; cursor: not-allowed; }
   .fadd { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-  .fadd select { text-transform: none; max-width: 100%; flex: 1 1 220px; }
+  .fchooser { display: flex; flex-direction: column; gap: 6px; flex: 1 1 100%; min-width: 0; }
+  .fchooser[hidden] { display: none; }
+  .fchooser input { width: 100%; min-width: 0; }
+  .fresults { max-height: 352px; overflow-y: auto; overscroll-behaviour: contain; border: 2px solid var(--line); background: var(--bg); }
+  .fresult { display: flex; align-items: center; gap: 8px; height: 44px; padding: 4px 8px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .fresult:hover, .fresult[aria-selected=true] { background: var(--panel); outline: 2px solid var(--hot); outline-offset: -2px; }
+  .fresult-icon { display: flex; flex: 0 0 24px; }
+  .fresult-icon canvas { width: 24px; height: 24px; image-rendering: pixelated; }
+  .fresult-info { display: flex; flex-direction: column; flex: 1; min-width: 0; gap: 2px; }
+  .fresult-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fresult-info .dim { font-size: 10px; }
+  .fresult-tag { flex: 0 0 auto; max-width: 45%; border: 1px solid var(--line); padding: 2px 4px; color: var(--dim); font-size: 9px; }
   .tblwrap { overflow-x: auto; max-width: 100%; }
   .replay-note { display: none; margin-bottom: 6px; }
   body[data-mode=replay] .replay-note { display: block; }
