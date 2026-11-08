@@ -1342,11 +1342,12 @@ function renderWeapons() {
       const k = keys.find((x) => P.includes(x));
       if (!k) return `<td class="dim">${keys[0] === 'ammo' && w === 'pistol' ? 'unlimited' : ''}</td>`;
       const b = paramBounds(w, k), def = WEAPON_DEFAULTS[w][k];
-      const lbl = { life: 'life', range: 'range', pellets: 'pellets', blast: 'blast', burst: 'burst' }[k];
-      return `<td><div class="weapon-value"><input type="number" data-w="${w}" data-k="${k}" min="${b.min}" max="${b.max}" step="1" value="${c[k]}" title="${b.label}: ${b.min} to ${b.max}, default ${def}"> <span class="dim${c[k] !== def ? ' changed' : ''}">(${def})${lbl && keys.length > 1 ? `<span class="caption">${lbl}</span>` : ''}</span></div></td>`;
+      const lbl = k === 'dmg' && w === 'flamethrower' ? 'dmg per tick'
+        : { life: 'life', range: 'range', pellets: 'pellets', blast: 'blast', burst: 'burst' }[k];
+      return `<td><div class="weapon-value"><input type="number" data-w="${w}" data-k="${k}" min="${b.min}" max="${b.max}" step="1" value="${c[k]}" title="${b.label}: ${b.min} to ${b.max}, default ${def}"> <span class="dim${c[k] !== def ? ' changed' : ''}">(${def})</span>${lbl ? ` <span class="dim caption">${lbl}</span>` : ''}</div></td>`;
     };
     const tick = `<input type="checkbox" data-w="${w}" data-k="on" ${c.on ? 'checked' : ''} ${w === 'pistol' ? 'disabled title="The pistol is the fallback weapon and is always on"' : ''}>`;
-    return `<tr class="${c.on ? '' : 'off'}"><td>${tick}</td><td>${w}${w === 'flamethrower' ? ' <span class="dim">dmg per tick</span>' : ''}</td>${PARAM_COLS.map(cell).join('')}</tr>`;
+    return `<tr class="${c.on ? '' : 'off'}"><td>${tick}</td><td>${w}</td>${PARAM_COLS.map(cell).join('')}</tr>`;
   }).join('');
   $('wpnTable').innerHTML = head + rows;
   const help = { density: 'Share of pickup spots filled at the start (0 = none, 1 = every spot, 2 = extra spots). Chosen from the seed, the same in every slot; unfilled spots stay empty.',
