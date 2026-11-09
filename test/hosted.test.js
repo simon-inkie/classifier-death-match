@@ -282,6 +282,29 @@ test('picker safety: a picked model is bounded at a multiple of its listed price
   assert.ok(Math.abs(callBound(r.fighter, true) - PICKER_SAFETY * worstCallUsd(r.fighter)) < 1e-15);
 });
 
+test('picker: context-length price tiers are pickable at the highest tier rate; unreadable tiers and per-request charges are refused', () => {
+  const sol = { input: '0.0000001', output: '0.0000006', input_cache_write: '0.000000125',
+    input_tiers: [{ min: 0, max: 272000, cost: '0.0000001' }, { min: 272000, cost: '0.0000002' }],
+    output_tiers: { short: { cost: '0.0000006' }, long: { cost: '0.0000009' } },
+    input_cache_read_tiers: [{ cost: '0.00000001' }, { cost: '0.00000002' }],
+    input_cache_write_tiers: [{ cost: '0.000000125' }, { cost: '0.00000025' }], service_tiers: { priority: { input: '0.0000002' } } };
+  const cat = parseCatalogue({ data: [
+    { id: 'openai/gpt-6.1-sol', type: 'language', pricing: sol },
+    { id: 'openai/gpt-odd-tier', type: 'language', pricing: { input: '0.0000001', output: '0.0000006', input_tiers: 'big' } },
+    { id: 'openai/gpt-odd-tier2', type: 'language', pricing: { input: '0.0000001', output: '0.0000006', output_tiers: [{ min: 1 }] } },
+    { id: 'openai/gpt-tier-request', type: 'language', pricing: { ...sol, request: '0.01' } },
+    { id: 'openai/gpt-6.1-sol-batch', type: 'language', pricing: sol },
+  ] });
+  assert.deepEqual(cat.find((m) => m.id === 'openai/gpt-6.1-sol').price, { in: 0.00000025, out: 0.0000009 });
+  for (const id of ['openai/gpt-odd-tier', 'openai/gpt-odd-tier2', 'openai/gpt-tier-request']) assert.equal(cat.find((m) => m.id === id).price, null, id);
+  assert.ok(!cat.some((m) => /-batch$/.test(m.id)));
+  const r = resolveFighter('jev', 'openai/gpt-6.1-sol', { enabled: true, models: cat });
+  assert.ok(r.ok);
+  console.log('gpt-6.1-sol style per-call bound', callBound(r.fighter, true));
+  assert.equal(resolveFighter('jev', 'openai/gpt-6.1-sol', { enabled: true, models: cat, maxCallUsd: 0.001 }).ok, false, 'cap still applies');
+  assert.equal(resolveFighter('jev', 'openai/gpt-odd-tier', { enabled: true, models: cat }).ok, false);
+});
+
 test('picker: gemini extras are ignored, -batch is hidden and refused, non-chat models are refused', () => {
   const gem = { input: '0.0000001', output: '0.0000004', maps_search: '25', service_tiers: { priority: { input: '0.0000002', output: '0.0000008' }, flex: { input: '0.00000005', output: '0.0000002' } } };
   const models = parseCatalogue({ data: [
