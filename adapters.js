@@ -41,7 +41,7 @@ export function buildRequest(fighter, scene, GATEWAY = 'https://ai-gateway.verce
   }
   if (fighter.transport === 'chat') {
     return { url: `${GATEWAY}/v1/chat/completions`,
-      body: { model: fighter.model, temperature: 0, max_tokens: 60,
+      body: { model: fighter.model, temperature: 0, max_tokens: fighter.maxTokens ?? 60,
         messages: [{ role: 'system', content: chatSystemPrompt(scene) }, { role: 'user', content: text }],
         response_format: { type: 'json_schema', json_schema: { name: 'decision', strict: true, schema: chatSchema(scene) } } } };
   }

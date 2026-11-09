@@ -10,7 +10,7 @@ import { spriteCanvases, spriteElement, spriteDataUrl } from './sprites.js';
 import { fighterIdentity, recordFighterIdentity } from './model-icons.js';
 import * as audio from './audio.js';
 import { SKIP_KEY, showSetupOnLoad, initialMode, liveAvailability, settleMode } from './setup.js';
-import { initSettings, fighterRows, addableOptions, applyAdd, applyRemove, MIN_FIGHTERS, normaliseLineup, normaliseSeed } from './settings.js';
+import { initSettings, hasSlowModel, fighterRows, addableOptions, applyAdd, applyRemove, MIN_FIGHTERS, normaliseLineup, normaliseSeed } from './settings.js';
 import { WEAPON_NAMES, WEAPON_PARAMS, WEAPONS as WEAPON_DEFAULTS, DEFAULT_WEAPON_CONFIG, paramBounds, normaliseWeapons,
   configId, configSummary, PICKUP_PARAMS, DEFAULT_PICKUPS } from './weapons.js';
 import { buildRecord, aggregate, filterRecords, sortStandings, mostKillsIds, celebrationText } from './leaderboard.js';
@@ -273,6 +273,12 @@ function renderFighters() {
   const pickerOn = Boolean(serverStatus?.modelPicker);
   const rows = fighterRows({ roster: ROSTER, enabled, picked: pickedModels, pickerOn });
   const add = addableOptions({ roster: ROSTER, enabled, picked: pickedModels, models: modelList, pickerOn, max: MAX_FIGHTERS });
+  const slow = hasSlowModel(rows), hint = $('timeoutHint'), field = $('timeoutField');
+  if (hint && hint.hidden === slow) {
+    hint.hidden = !slow;
+    field.classList.remove('flash');
+    if (slow && rg.dataset.lineup !== undefined) { void field.offsetWidth; field.classList.add('flash'); } // newly added: flash once
+  }
   // Status polls must not replace a focused control or close an open Add chooser.
   const signature = JSON.stringify({ rows, add, mode });
   if (rg.dataset.lineup === signature) return;

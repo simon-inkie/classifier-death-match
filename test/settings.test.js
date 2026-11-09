@@ -246,7 +246,8 @@ test('reset all settings clears only preferences and restores defaults in the co
   for (const key of ['arenaRoster', 'arenaPicked', 'arenaWeapons', 'arenaSeed', 'arenaSound']) assert.ok(removed.includes(key));
   assert.ok(!removed.includes('arenaWins'));
   assert.match(html, />Reset all settings<\/button>/);
-  const gameplay = section('id="panel-gameplay"', 'id="panel-sound"');
-  assert.ok(gameplay.indexOf('id="answerTimeout"') < gameplay.indexOf('id="setupModes"'));
-  assert.match(gameplay, /Models slower than this are stunned\. Raise it for bigger models\./);
+  const fighters = section('id="panel-fighters"', 'id="panel-gameplay"');
+  assert.ok(fighters.indexOf('id="rosterGrp"') < fighters.indexOf('id="answerTimeout"'));
+  assert.match(fighters, /Full LLMs are slower than classifiers\. Raise the timeout if they keep getting stunned\./);
+  assert.ok(!section('id="panel-gameplay"', 'id="panel-sound"').includes('id="answerTimeout"'));
 });

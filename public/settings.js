@@ -40,6 +40,12 @@ export function fighterRows({ roster, enabled, picked = {}, pickerOn = false }) 
   });
 }
 
+// True when the line-up has a full LLM (a picked gateway model, or the built-in Gemini chat slot): the
+// Fighters tab then hints that the answer timeout may need raising. Classifier-only line-ups and the bot: false.
+export function hasSlowModel(rows) {
+  return rows.some((f) => !f.bot && (f.gateway || ROSTER.find((r) => r.id === f.slot)?.kind === 'chat'));
+}
+
 // Fill spare gateway slots first, preserving the built-in Gemini choice for mixed line-ups.
 function freeSlot(roster, enabled) {
   const free = roster.filter((r) => r.kind !== 'bot' && !enabled.has(r.id));

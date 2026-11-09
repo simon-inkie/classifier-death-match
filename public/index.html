@@ -201,6 +201,9 @@
   .setting-field { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
   .setting-label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
   body[data-mode=replay] .seed-field, body[data-mode=replay] .seed-help { display: none; }
+  .timeout-hint { flex-basis: 100%; font-size: 11px; line-height: 1.4; color: var(--hot); border-left: 3px solid var(--hot); padding-left: 6px; }
+  #timeoutField.flash #answerTimeout { animation: tflash 0.8s steps(2) 3; }
+  @keyframes tflash { 50% { outline: 2px solid var(--hot); } }
   .seed-help { flex-basis: 100%; margin-top: -4px; }
   #soundGrp { margin-bottom: 12px; }
   #wpnReset { white-space: normal; text-align: left; }
@@ -294,14 +297,16 @@
   <div class="tabpanel" role="tabpanel" id="panel-fighters" aria-labelledby="tab-fighters" tabindex="0">
     <div class="dim replay-note">Replay plays the fighters and models saved in its log.</div>
     <div class="grp" id="rosterGrp"></div>
+    <div class="setting-field" id="timeoutField" style="margin-top:10px">
+      <label class="setting-label" for="answerTimeout">Answer timeout (seconds)</label>
+      <input id="answerTimeout" type="number" min="1" max="10" step="1" value="2" aria-describedby="answerTimeoutHelp timeoutHint">
+      <div class="dim" id="answerTimeoutHelp">Models slower than this are stunned.</div>
+      <div class="timeout-hint" id="timeoutHint" role="note" hidden>Full LLMs are slower than classifiers. Raise the timeout if they keep getting stunned.</div>
+    </div>
   </div>
   <div class="tabpanel" role="tabpanel" id="panel-gameplay" aria-labelledby="tab-gameplay" tabindex="0" hidden>
     <div class="dim replay-note">Replay plays the seed and settings saved in its log.</div>
-    <div class="setting-field" style="margin-bottom:12px">
-      <label class="setting-label" for="answerTimeout">Answer timeout (seconds)</label>
-      <input id="answerTimeout" type="number" min="1" max="10" step="1" value="2" aria-describedby="answerTimeoutHelp">
-      <div class="dim" id="answerTimeoutHelp">Models slower than this are stunned. Raise it for bigger models.</div>
-    </div>
+    <div class="dim" style="margin-bottom:8px">Answer timeout is on the Fighters tab.</div>
     <div class="setup-grid">
       <div class="k">Mode</div>
       <div class="setup-opts" id="setupModes">
