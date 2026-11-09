@@ -479,12 +479,13 @@ test('picker ON in mock mode (no key): the built-in list, roster models only', a
 });
 
 // The local proxy enforces the same flag. server.js runs on 8796 against a local fake gateway.
-async function withProxy(env, fn) {
+async function withProxy(env, fn, { reply } = {}) {
   const seen = [];
   const gw = http.createServer((req, res) => {
     let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => {
       if (req.url === '/v1/models') { res.end(JSON.stringify(CATALOGUE)); return; }
       const body = JSON.parse(b); seen.push({ url: req.url, model: body.model });
+      if (reply) return reply(req, res, body);
       const { action } = botDecide(scene);
       res.end(JSON.stringify(req.url.endsWith('/chat/completions')
         ? { choices: [{ message: { content: JSON.stringify({ action, confidence: 0.5 }) } }], usage: { prompt_tokens: 10, completion_tokens: 2 } }
@@ -494,12 +495,13 @@ async function withProxy(env, fn) {
   gw.listen(0, '127.0.0.1'); await once(gw, 'listening');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arena-proxy-'));
   const child = spawn(process.execPath, ['server.js'], { cwd: path.resolve(import.meta.dirname, '..'), stdio: ['ignore', 'pipe', 'pipe'],
-    env: { PATH: process.env.PATH, PORT: '8796', AI_GATEWAY_API_KEY: KEY, AI_GATEWAY_BASE: `http://127.0.0.1:${gw.address().port}`,
+    env: { PATH: process.env.PATH, PORT: '0', AI_GATEWAY_API_KEY: KEY, AI_GATEWAY_BASE: `http://127.0.0.1:${gw.address().port}`,
       LEADERBOARD_FILE: path.join(dir, 'lb.json'), ...env } });
   try {
-    await new Promise((resolve, reject) => { child.stdout.on('data', (d) => /on http/.test(d) && resolve()); child.on('exit', reject); });
-    const post = async (route, body) => { const r = await fetch(`http://127.0.0.1:8796${route}`, { method: 'POST', body: JSON.stringify(body) }); return { status: r.status, body: await r.json() }; };
-    await fn({ post, seen, get: async (route) => (await fetch(`http://127.0.0.1:8796${route}`)).json() });
+    let baseUrl;
+    await new Promise((resolve, reject) => { child.stdout.on('data', (d) => { const m = String(d).match(/on (http:\/\/\S+)/); if (m) { baseUrl = m[1]; resolve(); } }); child.on('exit', reject); });
+    const post = async (route, body) => { const r = await fetch(`${baseUrl}${route}`, { method: 'POST', body: JSON.stringify(body) }); return { status: r.status, body: await r.json() }; };
+    await fn({ post, seen, get: async (route) => (await fetch(`${baseUrl}${route}`)).json() });
   } finally {
     child.kill(); gw.close(); fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -810,4 +812,43 @@ test('normal four-fighter default is unchanged with the picker on or off', async
     }
     assert.equal((await start(api, ids)).status, 200);
   }
+});
+
+
+test('match timeout is clamped and fixed at start; billed timeouts retain the bound', async (t) => {
+  const originalTimer = globalThis.setTimeout, delays = [];
+  t.mock.method(globalThis, 'setTimeout', (fn, ms, ...args) => { delays.push(ms); return originalTimer(fn, ms, ...args); });
+  for (const [input, expected] of [[50, 10], [-5, 1], [5, 5], [undefined, 2]]) {
+    const { api, store } = setup({ gateway: fakeGateway({ fail: 'timeout' }) });
+    const s = await start(api, ['jev', 'laya'], { body: { weapons: { ...DEFAULT_WEAPON_CONFIG, answerTimeoutSeconds: input } } });
+    assert.equal(s.status, 200);
+    const token = s.body.matchToken, id = token.split('.')[0];
+    const m = await store.get(`match:${id}`);
+    assert.equal(m.weapons.answerTimeoutSeconds ?? 2, expected);
+    const out = await decide(api, token, 'jev', { timeoutMs: 100000, weapons: { answerTimeoutSeconds: 100000 } });
+    assert.equal(out.status, 504);
+    assert.equal(delays.at(-1), expected * 1000, 'per-call timeout overrides are ignored');
+    assert.ok(Math.abs(Number(await store.get(`match:${id}:spent`)) - worstCallUsd(rosterById.jev)) < 1e-12);
+    await call(api, 'matchEnd', { body: { matchToken: token } });
+    assert.ok(Math.abs(await committed(store) - worstCallUsd(rosterById.jev)) < 1e-12, 'unknown timeout charge remains on the day after closing');
+  }
+  assert.equal(spendConfig({}).gbp, 3);
+});
+
+
+test('local proxy reserves concurrent calls and retains potentially billed timeout cost', async () => {
+  const bound = worstCallUsd(rosterById.jev);
+  let entered;
+  const arrived = new Promise((resolve) => { entered = resolve; });
+  await withProxy({ CALL_BUDGET_USD: String(bound * 1.5) }, async ({ post, seen, get }) => {
+    const body = { fighter: 'jev', scene, weapons: { ...DEFAULT_WEAPON_CONFIG, answerTimeoutSeconds: 1 } };
+    const pending = post('/api/decide', body);
+    await arrived;
+    assert.equal((await post('/api/decide', body)).status, 429, 'in-flight reservation leaves too little budget for another call');
+    assert.equal(seen.length, 1);
+    assert.equal((await pending).status, 504);
+    assert.equal((await get('/api/status')).costBudget.used, bound, 'a timeout can still be billed');
+    assert.equal((await post('/api/decide', body)).status, 429, 'timeout does not refund its unknown cost');
+    assert.equal(seen.length, 1);
+  }, { reply: () => { entered(); /* Deliberately leave the fake upstream pending until abort. */ } });
 });

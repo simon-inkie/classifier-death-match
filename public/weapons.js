@@ -1,3 +1,5 @@
+import { clampAnswerTimeout, DEFAULT_ANSWER_TIMEOUT_SECONDS } from './answer-timeout.js';
+
 // Weapon numbers and the per-match weapon config (which weapons spawn, and their tuned values).
 // Shared by the sim, the rules text, the proxy and the Weapons dialog. Pure, no DOM.
 
@@ -83,6 +85,9 @@ export function normaliseWeapons(input, fallback = DEFAULT_WEAPON_CONFIG) {
     out.pickups[k] = Number.isFinite(n) && sp[k] !== null && sp[k] !== '' ? Math.min(max, Math.max(min, Math.round(n / step) * step)) : ORIGINAL_PICKUPS[k];
   }
   if (src.modelAims === true) out.modelAims = true;
+  const timeout = clampAnswerTimeout(src.answerTimeoutSeconds);
+  // Omit the original default so existing logs, hashes and config ids remain identical.
+  if (timeout !== DEFAULT_ANSWER_TIMEOUT_SECONDS) out.answerTimeoutSeconds = timeout;
   return out;
 }
 
@@ -104,6 +109,8 @@ export function configId(cfg) {
   const p = cfg.pickups || ORIGINAL_PICKUPS;
   if (!isOriginalPickups(p)) parts.push(['pickups', p.density, p.respawn]);
   if (cfg.modelAims) parts.push(['modelAims', true]);
+  const timeout = clampAnswerTimeout(cfg.answerTimeoutSeconds);
+  if (timeout !== DEFAULT_ANSWER_TIMEOUT_SECONDS) parts.push(['answerTimeoutSeconds', timeout]);
   const s = JSON.stringify(parts);
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
@@ -119,5 +126,6 @@ export function configSummary(cfg) {
   const on = enabledWeapons(cfg).join(', ');
   const p = cfg.pickups || ORIGINAL_PICKUPS;
   const pk = isOriginalPickups(p) ? '' : `; pickups x${p.density}, ${p.respawn ? `respawn x${p.respawn}` : 'no respawn'}`;
-  return (changed.length ? `${on}; tuned: ${changed.join(', ')}` : on) + pk + (cfg.modelAims ? '; model aims ON' : '; model aims OFF');
+  return (changed.length ? `${on}; tuned: ${changed.join(', ')}` : on) + pk + (cfg.modelAims ? '; model aims ON' : '; model aims OFF')
+    + (clampAnswerTimeout(cfg.answerTimeoutSeconds) !== DEFAULT_ANSWER_TIMEOUT_SECONDS ? `; answer timeout ${clampAnswerTimeout(cfg.answerTimeoutSeconds)}s` : '');
 }

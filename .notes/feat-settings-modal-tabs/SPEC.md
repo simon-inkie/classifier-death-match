@@ -64,3 +64,19 @@ play a fighter slot. 2: move every setting off the top bar into one Settings but
   fighters and match settings but no tabs or sound. Fix: an All settings button at the top of the intro
   opens Settings; Settings footer shows the host and picker state, to tell the three servers apart.
 - Follow-up: arena panels still show the slot name (GEMINI) for a gateway model in that slot.
+
+### 2026-11-09 configurable answer timeout
+- Gameplay adds persisted Answer timeout (seconds), default 2, clamped to 1..10. It lives in the
+  per-match config as optional `answerTimeoutSeconds`; default 2 is omitted to preserve existing
+  log shapes, config ids and deterministic mock results. Edits apply to the next match.
+- Browser mock/live calls and pending rings, virtual-time mock, autoplay (`--config`), local proxy
+  and hosted gateway use the same clamp. Hosted calls use the config frozen at match start, ignoring
+  per-call overrides; cold-instance locks cover the maximum timeout. CALL_TIMEOUT_MS no longer overrides
+  the match rule. Verification has no separate timeout threshold; its obsolete 2-second comment is updated.
+- Hosted maxDuration increases from 10 to 20 seconds to allow a 10-second model call plus validation
+  and spend settlement. No token caps or money ceilings increase. Unknown timeout charges retain the
+  worst-case reservation; local calls now reserve before starting too, including concurrent calls.
+- Offline tests cover clamp/default compatibility, 4-second answers succeeding at 5 and stunning at 2,
+  frozen hosted configs and conservative timeout spend accounting. No live model calls.
+- Validation: `npm test` on Node 22.23.2 passes 114/114, zero failures/skips. Proxy integration
+  servers use ephemeral ports. Default mock hashes and log byte lengths match all three captured baselines.

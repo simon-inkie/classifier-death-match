@@ -1,3 +1,4 @@
+import { answerTimeoutMs } from './public/answer-timeout.js';
 // Tiny local proxy + static server. Holds the AI Gateway key (from AI_GATEWAY_API_KEY),
 // never prints or writes it. Hard call budget per process (CALL_BUDGET, default 3000).
 import http from 'node:http';
@@ -23,7 +24,6 @@ const BUDGET = Number(process.env.CALL_BUDGET || 3000);
 const COST_MAX = process.env.CALL_BUDGET_USD == null || process.env.CALL_BUDGET_USD === ''
   ? null : Number(process.env.CALL_BUDGET_USD);
 if (COST_MAX !== null && (!Number.isFinite(COST_MAX) || COST_MAX < 0)) throw new Error('invalid CALL_BUDGET_USD');
-const TIMEOUT_MS = Number(process.env.CALL_TIMEOUT_MS || 2000);
 const LB_FILE = path.resolve(ROOT, process.env.LEADERBOARD_FILE || 'data/leaderboard.json');
 // Model picker (off unless ENABLE_MODEL_PICKER=1): with it off, a fighter only ever runs its roster model.
 const PICKER = pickerEnabled();
@@ -83,14 +83,18 @@ async function decide(fid, scene, weapons, picked) {
   const fighter = picked || rosterById[fid];
   if (!fighter || fighter.kind === 'bot') return { status: 400, body: { error: 'unknown fighter' } };
   if (!KEY) return { status: 503, body: { error: 'AI_GATEWAY_API_KEY not set' } };
-  if (COST_MAX !== null && usedUsd >= COST_MAX) return { status: 429,
+  const reservedUsd = conservativeCallUsd(fighter);
+  if (COST_MAX !== null && usedUsd + reservedUsd > COST_MAX + 1e-9) return { status: 429,
     body: { error: `cost budget spent ($${usedUsd}/$${COST_MAX})`, costBudget: costBudget() } };
   if (used >= BUDGET) return { status: 429, body: { error: `call budget spent (${used}/${BUDGET})`, budget: { used, max: BUDGET } } };
+  // Reserve before yielding: simultaneous calls and potentially billed timeouts cannot escape the cap.
+  usedUsd += reservedUsd;
   used++;
   perFighter[fid].calls++;
   const { url, body } = buildRequest(fighter, scene, GATEWAY, weapons);
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+  const timeoutMs = answerTimeoutMs(weapons);
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
   const t0 = performance.now();
   try {
     const r = await fetch(url, { method: 'POST', signal: ctl.signal,
@@ -98,6 +102,7 @@ async function decide(fid, scene, weapons, picked) {
     const txt = await r.text();
     const ms = Math.round(performance.now() - t0);
     if (!r.ok) {
+      usedUsd -= reservedUsd; // explicit HTTP failure: same non-billed assumption as the hosted proxy
       perFighter[fid].err++;
       let msg = txt.slice(0, 300);
       try { const e = JSON.parse(txt); msg = e.error?.message || e.message || msg; if (e.error?.type || e.error_type) msg = `${e.error?.type || e.error_type}: ${msg}`; } catch {}
@@ -106,14 +111,14 @@ async function decide(fid, scene, weapons, picked) {
     }
     const parsed = parseResponse(fighter, JSON.parse(txt), scene);
     // a picked model with no reported cost counts at a conservative estimate, never as free
-    usedUsd += picked && parsed.costSource === 'none' ? conservativeCallUsd(fighter) : Math.max(0, Number(parsed.cost) || 0);
+    usedUsd += (parsed.costSource === 'none' ? reservedUsd : Math.max(0, Number(parsed.cost) || 0)) - reservedUsd;
     perFighter[fid].ok++;
     console.log(`[call ${used}/${BUDGET}] ${fid} ok ${ms}ms -> ${parsed.action}`);
     return { status: 200, body: { ...parsed, upstreamMs: ms, budget: { used, max: BUDGET }, costBudget: costBudget() } };
   } catch (e) {
     perFighter[fid].err++;
     const ms = Math.round(performance.now() - t0);
-    const msg = e.name === 'AbortError' ? `timeout after ${TIMEOUT_MS}ms` : e.message;
+    const msg = e.name === 'AbortError' ? `timeout after ${timeoutMs}ms` : e.message;
     console.log(`[call ${used}/${BUDGET}] ${fid} error ${ms}ms ${msg}`);
     return { status: 504, body: { error: msg, ms, budget: { used, max: BUDGET } } };
   } finally {
@@ -212,5 +217,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`Classifier Death Match on http://${HOST}:${PORT}  key loaded: ${KEY ? 'yes' : 'no (mock and replay only)'}  call budget: ${BUDGET}`);
+  console.log(`Classifier Death Match on http://${HOST}:${server.address().port}  key loaded: ${KEY ? 'yes' : 'no (mock and replay only)'}  call budget: ${BUDGET}`);
 });

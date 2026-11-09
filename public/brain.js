@@ -1,3 +1,4 @@
+import { answerTimeoutMs } from './answer-timeout.js';
 // Scripted control bot, mock "models", and a headless virtual-time match runner.
 import { ACTIONS, rosterById, DEFAULT_ROSTER, promptVariant } from './shared.js';
 import { createMatch, applyAction, step, sceneFor, hashState, makeRng, TICK_HZ } from './sim.js';
@@ -84,13 +85,14 @@ export function rosterEntry(id) {
 }
 
 // Headless match in virtual time, same semantics as the browser loop:
-// each fighter asks as soon as its last answer lands, at most 10 Hz; 2 s timeout = stunned.
+// each fighter asks as soon as its last answer lands, at most 10 Hz; the configured answer timeout = stunned.
 // The scripted bot is a control and is off by default: pass bot: true (or an explicit roster) to add it.
 export const MODEL_FIGHTERS = DEFAULT_ROSTER; // jev, luna, laya, scaledown (Gemini and the bot are opt-in)
 // weapons: a weapon config (default: the game default, flamethrower off). It is saved in the log.
 export function runHeadlessMock({ seed = 1, bot = false, roster = bot ? [...MODEL_FIGHTERS, 'bot'] : MODEL_FIGHTERS,
   weapons = DEFAULT_WEAPON_CONFIG, modelAims = false } = {}) {
   const cfg = normaliseWeapons(modelAims ? { ...weapons, modelAims: true } : weapons);
+  const timeoutMs = answerTimeoutMs(cfg);
   const state = createMatch({ seed, roster, weapons: cfg });
   const rnd = makeRng(seed ^ 0x5eed);
   const minGap = Math.round(TICK_HZ / 10);
@@ -114,10 +116,10 @@ export function runHeadlessMock({ seed = 1, bot = false, roster = bot ? [...MODE
         const scene = sceneFor(state, id);
         const ms = mockLatency(id, rnd);
         const cfg = rosterById[id].mock;
-        const timeout = ms > 2000;
+        const timeout = ms > timeoutMs;
         const err = timeout ? 'timeout' : rnd() < cfg.err ? 'mock error' : null;
         const ans = err ? null : mockDecide(id, scene, rnd);
-        const wait = timeout ? 2000 : ms;
+        const wait = timeout ? timeoutMs : ms;
         c.pending = { asked: state.tick, arrive: state.tick + Math.max(1, Math.ceil((wait / 1000) * TICK_HZ)), ms: wait, err, ans };
       }
     }

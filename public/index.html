@@ -314,6 +314,10 @@
         <label class="setting-label" for="seed">Seed</label>
         <input id="seed" type="number" value="1" aria-describedby="seedHelp" title="Fixes random choices, spawn offsets and filled pickup spots. The same seed and recorded actions replay identically.">
       </div>
+      <div class="setting-field">
+        <label class="setting-label" for="answerTimeout">Answer timeout (seconds)</label>
+        <input id="answerTimeout" type="number" min="1" max="10" step="1" value="2" title="Slower answers stun the fighter. Applies from the next match.">
+      </div>
       <div class="dim seed-help" id="seedHelp">Same seed, same starting layout. With the same recorded actions, the match replays identically.</div>
     </div>
     <div class="grp" id="liveGrp">

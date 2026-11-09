@@ -1,3 +1,4 @@
+import { clampAnswerTimeout, answerTimeoutMs } from './answer-timeout.js';
 // Browser front end: decision loops, rendering, panels, record and replay.
 import { actionsFor, ACTIONS, ROSTER, rosterById, median, DEFAULT_ROSTER, MAX_FIGHTERS, promptVariant } from './shared.js';
 import { createMatch, applyAction, step, sceneFor, hashState, ReplayCursor, effectiveAction, normaliseLog,
@@ -18,7 +19,7 @@ import { DecisionHistory, Seeker, statsAt, DOM_ROW_CAP } from './history.js';
 
 const TICK_MS = 1000 / TICK_HZ;
 const MIN_GAP_MS = 100;   // 10 Hz cap per fighter
-const TIMEOUT_MS = 2000;  // slower than this = stunned until the next good answer
+const currentAnswerTimeoutMs = () => answerTimeoutMs(match?.weapons || weaponCfg);
 
 const $ = (id) => document.getElementById(id);
 const world = $('world').getContext('2d');
@@ -157,6 +158,12 @@ const anyModal = () => document.querySelector('.modal.show');
 
 // ---------- header and settings controls (the settings live in the Settings modal, same ids and wiring)
 function buildHeader() {
+  $('answerTimeout').value = clampAnswerTimeout(weaponCfg.answerTimeoutSeconds);
+  $('answerTimeout').onchange = (e) => {
+    const seconds = clampAnswerTimeout(e.target.value);
+    e.target.value = seconds;
+    setWeaponCfg({ ...weaponCfg, answerTimeoutSeconds: seconds });
+  };
   $('modelAims').checked = Boolean(weaponCfg.modelAims);
   $('modelAims').onchange = (e) => {
     safeStore.set('arenaModelAims', e.target.checked);
@@ -187,7 +194,7 @@ function buildHeader() {
     // which server this page talks to: the older local servers serve the same files with other settings
     $('serverInfo').textContent = `${location.host}, model picker ${serverStatus?.modelPicker ? 'on' : 'off'}`;
   } });
-  $('wpnReset').onclick = () => { setWeaponCfg({ ...DEFAULT_WEAPON_CONFIG, modelAims: weaponCfg.modelAims }); renderWeapons(); };
+  $('wpnReset').onclick = () => { setWeaponCfg({ ...DEFAULT_WEAPON_CONFIG, modelAims: weaponCfg.modelAims, answerTimeoutSeconds: weaponCfg.answerTimeoutSeconds }); renderWeapons(); };
   $('lbBtn').onclick = openLeaderboard;
   $('lbClose').onclick = () => $('lbModal').classList.remove('show');
   $('lbMock').checked = lbIncludeMock;
@@ -917,6 +924,7 @@ async function ask(id, mid) {
   const c = ctl[id];
   c.lastAsk = gameNow(); c.pending = true; c.since = c.lastAsk;
   const scene = sceneFor(match, id);
+  const timeoutMs = currentAnswerTimeoutMs();
   const r = rosterById[id];
   let ans = null, err = null, ms = 0, cost = 0, costEst = false, halt = false;
   if (r.kind === 'bot') {
@@ -926,9 +934,9 @@ async function ask(id, mid) {
   } else if (mode === 'mock') {
     const rnd = Math.random;
     const lat = mockLatency(id, rnd);
-    const timeout = lat > TIMEOUT_MS;
-    await new Promise((res) => setTimeout(res, timeout ? TIMEOUT_MS : lat));
-    ms = timeout ? TIMEOUT_MS : lat;
+    const timeout = lat > timeoutMs;
+    await new Promise((res) => setTimeout(res, timeout ? timeoutMs : lat));
+    ms = timeout ? timeoutMs : lat;
     if (timeout) err = 'timeout (mock)';
     else if (rnd() < r.mock.err) err = 'mock error';
     else {
@@ -937,7 +945,7 @@ async function ask(id, mid) {
     }
   } else {
     const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
     const t0 = performance.now();
     try {
       const resp = await fetch('/api/decide', { method: 'POST', signal: ac.signal,
@@ -959,7 +967,7 @@ async function ask(id, mid) {
       }
     } catch (e) {
       ms = performance.now() - t0;
-      err = e.name === 'AbortError' ? `timeout ${TIMEOUT_MS}ms` : e.message;
+      err = e.name === 'AbortError' ? `timeout ${timeoutMs}ms` : e.message;
     } finally { clearTimeout(timer); }
   }
   if (mid !== matchId) return;
@@ -994,7 +1002,7 @@ function replayPendingFrac(id) {
   if (!d || d.ms == null) return null;
   const startTick = d.t - (d.ms / 1000) * TICK_HZ;
   if (match.tick < startTick) return null;
-  return Math.min(1, ((match.tick - startTick) / TICK_HZ) * 1000 / TIMEOUT_MS);
+  return Math.min(1, ((match.tick - startTick) / TICK_HZ) * 1000 / currentAnswerTimeoutMs());
 }
 
 // ---------- main loop
@@ -1438,7 +1446,7 @@ function render() {
     let frac = null;
     if (view) frac = null;
     else if (mode === 'replay') frac = replayPendingFrac(f.id);
-    else if (ctl[f.id]?.pending && r.kind !== 'bot') frac = Math.min(1, (gameNow() - ctl[f.id].since) / TIMEOUT_MS);
+    else if (ctl[f.id]?.pending && r.kind !== 'bot') frac = Math.min(1, (gameNow() - ctl[f.id].since) / currentAnswerTimeoutMs());
     if (frac != null) {
       ov.strokeStyle = '#ffffff30'; ov.lineWidth = 3;
       ov.beginPath(); ov.arc(x, y, PR, 0, Math.PI * 2); ov.stroke();

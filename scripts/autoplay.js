@@ -1,3 +1,4 @@
+import { answerTimeoutMs } from '../public/answer-timeout.js';
 // Real-time, browser-free live matches. Importing this module makes no requests.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,7 +18,7 @@ export const realClock = {
   clear: (timer) => clearTimeout(timer),
 };
 const TICK_MS = 1000 / TICK_HZ;
-const TIMEOUT_MS = 2000, MIN_GAP_MS = 100;
+const MIN_GAP_MS = 100;
 
 // The sim already offsets physical spawns by seed % n. A simple left rotation
 // cancels it, and a simple right rotation visits only half the slots for even n.
@@ -74,6 +75,7 @@ export async function jsonRequest(fetcher, server, route, body, signal) {
 export async function runLiveMatch({ seed, roster, weapons = DEFAULT_WEAPON_CONFIG, label = '', server,
   fetcher = fetch, clock = realClock, shouldAbort = () => null, onCall = () => {}, warn = console.warn }) {
   const state = createMatch({ seed, roster, weapons });
+  const timeoutMs = answerTimeoutMs(state.weapons);
   const stats = Object.fromEntries(roster.map((id) => [id, { lat: [], errors: 0, timeouts: 0,
     decisions: 0, calls: 0, cost: 0, costEst: false, targetsChosen: {} }]));
   const log = { version: 1, mode: 'live', modelAims: Boolean(state.weapons.modelAims), seed,
@@ -93,7 +95,7 @@ export async function runLiveMatch({ seed, roster, weapons = DEFAULT_WEAPON_CONF
     c.busy = true; c.lastAsk = clock.now();
     const scene = sceneFor(state, id), askedTick = state.tick, ac = new AbortController();
     controllers.add(ac);
-    const timer = clock.timer(() => ac.abort(), TIMEOUT_MS);
+    const timer = clock.timer(() => ac.abort(), timeoutMs);
     const task = (async () => {
       let ans = null, err = null, cost = 0, costEst = false, status = null, data;
       try {
@@ -107,7 +109,7 @@ export async function runLiveMatch({ seed, roster, weapons = DEFAULT_WEAPON_CONF
           const real = data.costSource ? data.costSource !== 'none' : Number(data.cost) > 0;
           cost = real ? Math.max(0, Number(data.cost) || 0) : estCost(rosterById[id]); costEst = !real;
         }
-      } catch (e) { err = e.name === 'AbortError' ? `timeout ${TIMEOUT_MS}ms` : e.message; }
+      } catch (e) { err = e.name === 'AbortError' ? `timeout ${timeoutMs}ms` : e.message; }
       finally { clock.clear(timer); controllers.delete(ac); }
       const ms = Math.round(clock.now() - c.lastAsk), s = stats[id];
       // Account even for answers arriving after death or the final physics tick.
@@ -155,7 +157,7 @@ export async function runLiveMatch({ seed, roster, weapons = DEFAULT_WEAPON_CONF
   stopped = true;
   for (const c of Object.values(control)) clock.clear(c.nextTimer);
   // On a budget abort, stop outstanding requests. On normal finish, settle them
-  // (at most 2 s) for honest accounting, without applying late actions.
+  // (at most the configured answer timeout) for honest accounting, without applying late actions.
   if (abortReason) for (const ac of controllers) ac.abort();
   while (pending.size) await clock.sleep(5);
   log.status = abortReason ? 'aborted' : 'completed';
