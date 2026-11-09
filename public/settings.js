@@ -51,16 +51,29 @@ function freeSlot(roster, enabled) {
 export function addableOptions({ roster, enabled, picked = {}, models = [], pickerOn = false, max, query = '' }) {
   if (enabled.size >= max) return { fighters: [], models: [] };
   const matches = (...values) => values.join(' ').toLowerCase().includes(query.trim().toLowerCase());
-  const fighters = roster.filter((r) => !r.gatewaySlot && !enabled.has(r.id) && matches(r.name, r.id, r.model, companyForModel(r.model)))
-    .map((r) => ({ value: `slot:${r.id}`, label: r.kind === 'bot' ? 'Scripted bot (control)' : `${r.name} (${r.model})`,
-      name: r.kind === 'bot' ? 'Scripted bot' : r.name, model: r.model,
-      company: r.kind === 'bot' ? 'Local' : companyForModel(r.model), iconId: r.kind === 'bot' ? r.id : iconIdForModel(r.model) }));
-  if (!pickerOn || !freeSlot(roster, enabled)) return { fighters, models: [] };
+  const optionFor = (r) => r.kind === 'bot'
+    ? { value: `slot:${r.id}`, label: 'Scripted bot (control)', name: 'Scripted bot', model: r.model, company: 'Local', iconId: r.id }
+    : { value: `slot:${r.id}`, label: `${r.model.split('/').pop()} (${companyForModel(r.model)}) - ${r.model}`,
+      name: r.model.split('/').pop(), model: r.model, company: companyForModel(r.model), iconId: iconIdForModel(r.model) };
+  const available = roster.filter((r) => !r.gatewaySlot && !enabled.has(r.id) && matches(r.name, r.id, r.model, companyForModel(r.model)));
+  // A built-in chat slot (Gemini) is an ordinary model: listed by its model id, with its provider's group.
+  const fighters = available.filter((r) => r.kind !== 'chat').map(optionFor);
+  const chat = available.filter((r) => r.kind === 'chat').map(optionFor);
+  const withChat = (list) => {
+    const out = [...list];
+    for (const o of chat) {
+      let at = -1;
+      out.forEach((x, i) => { if (x.company === o.company) at = i; });
+      out.splice(at < 0 ? out.length : at + 1, 0, o);
+    }
+    return out;
+  };
+  if (!pickerOn || !freeSlot(roster, enabled)) return { fighters, models: withChat([]) };
   const playing = new Set(roster.filter((r) => enabled.has(r.id)).map((r) => picked[r.id] || r.model));
   const rosterModels = new Set(roster.map((r) => r.model));
-  return { fighters, models: models.filter((m) => !rosterModels.has(m.id) && !playing.has(m.id) && matches(m.name || '', m.id, companyForModel(m.id)))
+  return { fighters, models: withChat(models.filter((m) => !rosterModels.has(m.id) && !playing.has(m.id) && matches(m.name || '', m.id, companyForModel(m.id)))
     .map((m) => ({ value: `model:${m.id}`, label: `${m.name || m.id.split('/').pop()} (${companyForModel(m.id)}) - ${m.id}`,
-      name: m.name || m.id.split('/').pop(), model: m.id, company: companyForModel(m.id), iconId: iconIdForModel(m.id) })) };
+      name: m.name || m.id.split('/').pop(), model: m.id, company: companyForModel(m.id), iconId: iconIdForModel(m.id), liveOnly: true }))) };
 }
 
 // Apply an Add choice. Returns the new { enabled, picked }, or null if it cannot be added.

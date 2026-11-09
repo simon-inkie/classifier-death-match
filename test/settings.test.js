@@ -95,19 +95,21 @@ test('fighters tab: the four classifiers by default; Gemini and the bot are offe
   const enabled = new Set(DEFAULT_ROSTER);
   assert.deepEqual(fighterRows({ roster: ROSTER, enabled }).map((f) => f.slot), ['jev', 'luna', 'laya', 'scaledown']);
   const add = addableOptions({ roster: ROSTER, enabled, max: MAX_FIGHTERS });
-  assert.deepEqual(add.fighters.map((o) => o.value), ['slot:gemini', 'slot:bot']);
-  assert.deepEqual(add.models, [], 'no gateway models with the picker off');
+  assert.deepEqual(add.fighters.map((o) => o.value), ['slot:bot']);
+  assert.deepEqual(add.models.map((o) => o.value), ['slot:gemini'], 'Gemini is an ordinary model entry, named from its model id');
+  assert.equal(add.models[0].name, 'gemini-2.5-flash-lite');
 });
 
 test('fighters tab: a gateway model plays in a free slot as that slot\'s picked model (same wire shape as the old picker)', () => {
   const models = [{ id: 'anthropic/claude-sonnet-5.5' }, { id: 'anthropic/claude-opus-5.5' }, { id: 'google/gemini-2.5-flash-lite' }];
   const st = { roster: ROSTER, enabled: new Set(DEFAULT_ROSTER), picked: {}, models, pickerOn: true, max: MAX_FIGHTERS };
-  assert.deepEqual(addableOptions(st).models.map((o) => o.value), ['model:anthropic/claude-sonnet-5.5', 'model:anthropic/claude-opus-5.5'], 'roster models are offered as fighters, not twice');
+  assert.deepEqual(addableOptions(st).models.map((o) => o.value), ['model:anthropic/claude-sonnet-5.5', 'model:anthropic/claude-opus-5.5', 'slot:gemini'], 'roster models are offered as fighters, not twice');
+  assert.ok(!addableOptions(st).models.some((o) => o.value === 'slot:gemini' && o.liveOnly), 'built-in Gemini is not tagged live-only');
   const next = applyAdd('model:anthropic/claude-sonnet-5.5', st);
   assert.ok(next.enabled.has('gw1')); assert.deepEqual(next.picked, { gw1: 'anthropic/claude-sonnet-5.5' }, 'the spare gateway slot first');
   const row = fighterRows({ ...st, ...next }).find((f) => f.slot === 'gw1');
   assert.equal(row.model, 'anthropic/claude-sonnet-5.5'); assert.equal(row.gateway, true);
-  assert.equal(addableOptions({ ...st, ...next }).models.length, 1, 'another gateway slot remains free');
+  assert.equal(addableOptions({ ...st, ...next }).models.length, 2, 'another gateway slot remains free');
   const back = applyRemove('gw1', { ...next });
   assert.ok(!back.enabled.has('gw1')); assert.deepEqual(back.picked, {}, 'removing forgets the picked model');
   assert.deepEqual(applyAdd('slot:gemini', { ...st, picked: { gemini: 'x/y' } }).picked, {}, 'a roster fighter plays its own model');
@@ -136,14 +138,14 @@ test('model chooser searches names, ids and company names without changing avail
   }
   assert.equal(addableOptions({ ...st, query: 'Moonshot AI' }).models[0].value, 'model:moonshotai/kimi-k2');
   assert.deepEqual(addableOptions({ ...st, query: 'no matching model' }), { fighters: [], models: [] });
-  assert.equal(addableOptions({ ...st, query: '' }).models.length, 2);
+  assert.equal(addableOptions({ ...st, query: '' }).models.length, 3);
   const next = applyAdd('model:anthropic/claude-sonnet-5.5', st);
   const row = fighterRows({ ...st, ...next }).find((f) => f.slot === 'gw1');
   assert.equal(row.name, 'claude-sonnet-5.5');
   assert.notEqual(row.iconId, 'gemini');
 });
 
-test('add results keep arena fighters before gateway models and preserve catalogue order when filtered', () => {
+test('add results keep Gemini in its provider group with the gateway models and preserve catalogue order when filtered', () => {
   const models = [
     { id: 'google/gemma-3', name: 'Gemma 3' },
     { id: 'anthropic/claude-sonnet-5.5', name: 'Claude Sonnet 5.5' },
@@ -152,9 +154,9 @@ test('add results keep arena fighters before gateway models and preserve catalog
   const st = { roster: ROSTER, enabled: new Set(DEFAULT_ROSTER), models, pickerOn: true, max: MAX_FIGHTERS };
   const options = addableOptions({ ...st, query: ' GOOGLE ' });
   const results = [...options.fighters, ...options.models];
-  assert.deepEqual(results.map((o) => o.value), ['slot:gemini', 'model:google/gemma-3', 'model:google/gemma-2']);
+  assert.deepEqual(results.map((o) => o.value), ['model:google/gemma-3', 'model:google/gemma-2', 'slot:gemini']);
   assert.deepEqual(results.map((o) => o.company), ['Google', 'Google', 'Google']);
-  assert.deepEqual(results.map((o) => o.name), ['GEMINI', 'Gemma 3', 'Gemma 2']);
+  assert.deepEqual(results.map((o) => o.name), ['Gemma 3', 'Gemma 2', 'gemini-2.5-flash-lite']);
   assert.deepEqual(addableOptions({ ...st, query: ' CLAUDE ' }).models.map((o) => o.value), ['model:anthropic/claude-sonnet-5.5']);
 });
 

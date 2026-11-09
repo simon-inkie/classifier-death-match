@@ -56,9 +56,11 @@ export function iconIdForModel(modelId) {
 
 // Slot IDs and colours remain stable; only an overridden model changes the displayed identity.
 export function fighterIdentity(fighter, modelId = fighter.model) {
-  return validModelId(modelId) && (modelId !== fighter.model || fighter.gatewaySlot) && fighter.kind !== 'bot'
+  return validModelId(modelId) && (modelId !== fighter.model || fighter.kind === 'chat') && fighter.kind !== 'bot'
     ? { name: modelId.split('/').pop(), iconId: iconIdForModel(modelId) }
-    : { name: fighter.name, iconId: fighter.id };
+    : fighter.kind === 'chat' && !fighter.gatewaySlot
+      ? { name: fighter.model.split('/').pop(), iconId: iconIdForModel(fighter.model) }
+      : { name: fighter.name, iconId: fighter.id };
 }
 
 // Stored records may predate model metadata; their original roster identity remains readable.

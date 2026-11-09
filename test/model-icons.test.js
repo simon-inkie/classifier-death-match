@@ -37,14 +37,14 @@ test('an override names the actual model with its company icon; default fighters
   assert.equal(identity.name, 'claude-sonnet-5.5');
   assert.equal(identity.iconId, iconIdForModel('anthropic/claude-sonnet-5.5'));
   assert.notEqual(identity.iconId, 'gemini');
-  assert.deepEqual(fighterIdentity(rosterById.gemini), { name: 'GEMINI', iconId: 'gemini' });
+  assert.deepEqual(fighterIdentity(rosterById.gemini), { name: 'gemini-2.5-flash-lite', iconId: iconIdForModel('google/gemini-2.5-flash-lite') }, 'Gemini is named from its model id like any other model');
 });
 
 
 test('malformed replay model IDs fall back to the slot identity without throwing', () => {
   for (const model of [null, '', 42, {}, [], true, 'bad', 'google/', '/model', 'a/b/c']) {
     for (const id of ['gemini', 'gw1']) {
-      const expected = { name: rosterById[id].name, iconId: id };
+      const expected = id === 'gemini' ? fighterIdentity(rosterById.gemini) : { name: rosterById[id].name, iconId: id };
       assert.deepEqual(fighterIdentity(rosterById[id], model), expected);
       assert.deepEqual(recordFighterIdentity({ id, model }), expected);
     }

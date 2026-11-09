@@ -328,7 +328,7 @@ function renderFighters() {
     list.innerHTML = results.map((o, i) => `<div id="addOption-${i}" class="fresult" role="option" aria-selected="false" title="${esc(o.model)}">
       <span class="fresult-icon" aria-hidden="true"></span>
       <span class="fresult-info"><span class="fresult-name">${esc(o.name)}</span><span class="dim">${esc(o.company)}</span></span>
-      <span class="fresult-tag">${i < options.fighters.length ? 'arena' : 'gateway (live only)'}</span>
+      <span class="fresult-tag">${o.liveOnly ? 'gateway (live only)' : i < options.fighters.length ? 'arena' : 'gateway'}</span>
     </div>`).join('');
     [...list.children].forEach((row, i) => {
       row.querySelector('.fresult-icon').appendChild(spriteElement(results[i].iconId, 24));
