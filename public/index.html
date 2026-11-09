@@ -296,13 +296,13 @@
   </div>
   <div class="tabpanel" role="tabpanel" id="panel-fighters" aria-labelledby="tab-fighters" tabindex="0">
     <div class="dim replay-note">Replay plays the fighters and models saved in its log.</div>
-    <div class="grp" id="rosterGrp"></div>
-    <div class="setting-field" id="timeoutField" style="margin-top:10px">
+    <div class="setting-field" id="timeoutField" style="margin-bottom:10px">
       <label class="setting-label" for="answerTimeout">Answer timeout (seconds)</label>
       <input id="answerTimeout" type="number" min="1" max="10" step="1" value="2" aria-describedby="answerTimeoutHelp timeoutHint">
       <div class="dim" id="answerTimeoutHelp">Models slower than this are stunned.</div>
       <div class="timeout-hint" id="timeoutHint" role="note" hidden>Full LLMs are slower than classifiers. Raise the timeout if they keep getting stunned.</div>
     </div>
+    <div class="grp" id="rosterGrp"></div>
   </div>
   <div class="tabpanel" role="tabpanel" id="panel-gameplay" aria-labelledby="tab-gameplay" tabindex="0" hidden>
     <div class="dim replay-note">Replay plays the seed and settings saved in its log.</div>

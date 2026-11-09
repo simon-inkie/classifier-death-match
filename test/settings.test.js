@@ -247,7 +247,7 @@ test('reset all settings clears only preferences and restores defaults in the co
   assert.ok(!removed.includes('arenaWins'));
   assert.match(html, />Reset all settings<\/button>/);
   const fighters = section('id="panel-fighters"', 'id="panel-gameplay"');
-  assert.ok(fighters.indexOf('id="rosterGrp"') < fighters.indexOf('id="answerTimeout"'));
+  assert.ok(fighters.indexOf('id="answerTimeout"') < fighters.indexOf('id="rosterGrp"'));
   assert.match(fighters, /Full LLMs are slower than classifiers\. Raise the timeout if they keep getting stunned\./);
   assert.ok(!section('id="panel-gameplay"', 'id="panel-sound"').includes('id="answerTimeout"'));
 });
