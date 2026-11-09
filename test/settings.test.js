@@ -182,3 +182,69 @@ test('a picked model can be followed by the Gemini baseline in a mixed line-up',
   assert.equal(mixed.picked.gw1, 'anthropic/claude-sonnet-5.5');
   assert.equal(mixed.picked.gemini, undefined);
 });
+
+import { normaliseLineup, normaliseSeed } from '../public/settings.js';
+import { normaliseWeapons, DEFAULT_WEAPON_CONFIG } from '../public/weapons.js';
+
+test('saved setup preserves selected slots, removes stale models and repairs corrupt lineups', () => {
+  const models = [{ id: 'meta/muse-spark' }];
+  const saved = normaliseLineup(['jev', 'gw1', 'bot'], { gw1: models[0].id }, models);
+  assert.deepEqual([...saved.enabled], ['jev', 'gw1', 'bot']);
+  assert.deepEqual(saved.picked, { gw1: models[0].id });
+  assert.deepEqual([...normaliseLineup([...saved.enabled], saved.picked, []).enabled], ['jev', 'bot']);
+  for (const bad of [null, {}, 'bad', [], ['unknown'], ['gw1']]) {
+    const result = normaliseLineup(bad, { gw1: {} }, []);
+    assert.ok(result.enabled.size >= 2);
+    assert.ok([...result.enabled].every((id) => DEFAULT_ROSTER.includes(id)));
+    assert.deepEqual(result.picked, {});
+  }
+  assert.equal(normaliseLineup(ROSTER.map((r) => r.id), {}, []).enabled.size, MAX_FIGHTERS);
+  assert.equal(normaliseLineup(['jev', 'gw1'], { gw1: rosterById.jev.model }, [{ id: rosterById.jev.model }]).enabled.has('gw1'), false);
+});
+
+import { rosterById } from '../public/shared.js';
+test('saved numeric settings clamp and corrupt values fall back without throwing', () => {
+  for (const bad of [null, {}, [], '', 'invalid', { toString: null }]) assert.equal(normaliseSeed(bad), 1);
+  assert.equal(normaliseSeed(1e30), 2147483647);
+  assert.equal(normaliseSeed(-1e30), -2147483648);
+  assert.equal(normaliseSeed('42'), 42);
+  const cfg = normaliseWeapons({ rifle: { dmg: { toString: null }, ammo: 999 }, pickups: { density: false }, answerTimeoutSeconds: 999 });
+  assert.equal(cfg.rifle.dmg, DEFAULT_WEAPON_CONFIG.rifle.dmg);
+  assert.equal(cfg.rifle.ammo, 200);
+  assert.equal(cfg.answerTimeoutSeconds, 10);
+});
+
+test('settings storage tolerates malformed JSON and denied browser storage', () => {
+  const read = game.split('\n').find((line) => line.startsWith('function readStoredObject'));
+  const store = game.slice(game.indexOf('const safeStore ='), game.indexOf('function toast'));
+  for (const localStorage of [
+    { getItem() { return '{'; }, setItem() { throw Error('quota'); }, removeItem() { throw Error('denied'); } },
+    undefined,
+  ]) {
+    const ctx = vm.createContext({ localStorage });
+    vm.runInContext(`${read}\n${store}\nif (readStoredObject('x', null) !== null || safeStore.get('x', 7) !== 7) throw Error('bad fallback'); safeStore.set('x', 1); safeStore.remove('x');`, ctx);
+  }
+});
+
+test('reset all settings clears only preferences and restores defaults in the controls', () => {
+  const elements = Object.fromEntries(['seed', 'answerTimeout', 'modelAims', 'setupSkip'].map((id) => [id, {}]));
+  const removed = [], sound = {};
+  const ctx = vm.createContext({ DEFAULT_ROSTER, DEFAULT_WEAPON_CONFIG, normaliseSeed, clampAnswerTimeout: () => 2,
+    $: (id) => elements[id], safeStore: { remove: (k) => removed.push(k) }, SKIP_KEY: 'arenaSetupSkip',
+    setStyle: (s) => { sound.style = s; }, setWeaponCfg: (c) => { sound.weapons = c; },
+    audio: { setMusic: (v) => { sound.music = v; }, setVolume: (v) => { sound.volume = v; }, setEnabled: (v) => { sound.enabled = v; } },
+    settleMode: () => 'mock', setMode() {}, serverStatus: null, renderWeapons() {}, syncSettings() {}, canPreview: () => false,
+  });
+  const reset = game.slice(game.indexOf('function resetSettings()'), game.indexOf('function setLineup'));
+  vm.runInContext(`let enabled, pickedModels; ${reset}; resetSettings(); if (enabled.size !== 4 || Object.keys(pickedModels).length) throw Error('lineup');`, ctx);
+  assert.equal(elements.seed.value, 1);
+  assert.equal(elements.answerTimeout.value, 2);
+  assert.equal(elements.modelAims.checked, false);
+  assert.equal(sound.style, 'logos'); assert.equal(sound.music, false); assert.equal(sound.volume, 0.6); assert.equal(sound.enabled, true);
+  for (const key of ['arenaRoster', 'arenaPicked', 'arenaWeapons', 'arenaSeed', 'arenaSound']) assert.ok(removed.includes(key));
+  assert.ok(!removed.includes('arenaWins'));
+  assert.match(html, />Reset all settings<\/button>/);
+  const gameplay = section('id="panel-gameplay"', 'id="panel-sound"');
+  assert.ok(gameplay.indexOf('id="answerTimeout"') < gameplay.indexOf('id="setupModes"'));
+  assert.match(gameplay, /Models slower than this are stunned\. Raise it for bigger models\./);
+});

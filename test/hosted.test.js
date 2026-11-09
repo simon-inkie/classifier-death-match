@@ -852,3 +852,23 @@ test('local proxy reserves concurrent calls and retains potentially billed timeo
     assert.equal(seen.length, 1);
   }, { reply: () => { entered(); /* Deliberately leave the fake upstream pending until abort. */ } });
 });
+
+test('empty gateway bodies remain recorded errors in hosted and local APIs', async () => {
+  const { api, store } = setup({ gateway: { fetcher: async () => ({ ok: true, status: 200, text: async () => '' }) } });
+  const token = (await start(api, ['jev', 'gemini'])).body.matchToken;
+  const out = await call(api, 'decide', { body: { matchToken: token, fighter: 'gemini', scene: sceneIn(['jev', 'gemini'], 'gemini') } });
+  assert.equal(out.status, 502);
+  assert.match(out.body.error, /empty response.*HTTP 200.*google\/gemini/);
+  const observations = await store.listRange(`match:${token.split('.')[0]}:acts:gemini`);
+  assert.equal(observations.length, 1);
+  assert.equal(observations[0].ok, 0);
+  assert.equal(observations[0].to, 0, 'a malformed answer is an error, not a timeout');
+  await withProxy({}, async ({ post, get }) => {
+    const answer = await post('/api/decide', { fighter: 'gemini', scene: sceneIn(['jev', 'gemini'], 'gemini') });
+    assert.equal(answer.status, 502);
+    assert.match(answer.body.error, /empty response.*HTTP 200.*google\/gemini/);
+    const status = await get('/api/status');
+    assert.equal(status.perFighter.gemini.err, 1);
+    assert.equal(status.perFighter.gemini.ok, 0);
+  }, { reply: (req, res) => res.end('') });
+});

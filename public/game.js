@@ -10,7 +10,7 @@ import { spriteCanvases, spriteElement, spriteDataUrl } from './sprites.js';
 import { fighterIdentity, recordFighterIdentity } from './model-icons.js';
 import * as audio from './audio.js';
 import { SKIP_KEY, showSetupOnLoad, initialMode, liveAvailability, settleMode } from './setup.js';
-import { initSettings, fighterRows, addableOptions, applyAdd, applyRemove, MIN_FIGHTERS } from './settings.js';
+import { initSettings, fighterRows, addableOptions, applyAdd, applyRemove, MIN_FIGHTERS, normaliseLineup, normaliseSeed } from './settings.js';
 import { WEAPON_NAMES, WEAPON_PARAMS, WEAPONS as WEAPON_DEFAULTS, DEFAULT_WEAPON_CONFIG, paramBounds, normaliseWeapons,
   configId, configSummary, PICKUP_PARAMS, DEFAULT_PICKUPS } from './weapons.js';
 import { buildRecord, aggregate, filterRecords, sortStandings, mostKillsIds, celebrationText } from './leaderboard.js';
@@ -29,12 +29,12 @@ const params = new URLSearchParams(location.search);
 // Live by default; if Live turns out to be unavailable (no key, budget spent, server down), a defaulted
 // Live falls back to Mock once the status is known (see refreshStatus).
 const firstMode = initialMode(params);
+const savedMode = readStoredObject('arenaGeneral', {}).mode;
+if (!firstMode.explicit && ['live', 'mock'].includes(savedMode)) firstMode.mode = savedMode;
 let mode = firstMode.mode;
 // Default four: Jev, Luna, Laya, ScaleDown. Gemini and the scripted bot are addable,
 // off by default (or ?gemini=1, ?bot=1).
 let enabled = new Set(DEFAULT_ROSTER);
-if (params.get('bot') === '1') enabled.add('bot');
-if (params.get('gemini') === '1') enabled.add('gemini');
 let match = null, roster = [], ctl = {}, stats = {}, queue = [], log = null, matchId = 0;
 let running = false, paused = false, acc = 0, lastFrame = performance.now();
 // Game clock for call scheduling and pending rings: wall time minus time spent paused.
@@ -47,7 +47,11 @@ let serverStatus = null;
 // local proxy, which needs none). pickedModels: slot id -> gateway model id, only used when the server
 // says the picker is on (and the server checks every id again).
 let matchToken = null, liveStarting = false, modelList = [];
-let pickedModels = readStoredObject('arenaPicked', {});
+const savedLineup = normaliseLineup(readStoredObject('arenaRoster', null), readStoredObject('arenaPicked', {}));
+enabled = savedLineup.enabled;
+let pickedModels = savedLineup.picked;
+if (params.get('bot') === '1') enabled.add('bot');
+if (params.get('gemini') === '1') enabled.add('gemini');
 function readStoredObject(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v && typeof v === 'object' ? v : d; } catch { return d; } }
 const slotModel = (id) => (mode !== 'replay' && serverStatus?.modelPicker && pickedModels[id]) || null; // mock uses the picked identity with this slot's simulated behaviour
 const esc = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -116,6 +120,7 @@ for (const event of ['keydown', 'click']) document.addEventListener(event, (e) =
 const safeStore = {
   get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  remove(k) { try { localStorage.removeItem(k); } catch {} },
 };
 function toast(msg, ms = 3500) {
   const t = $('toast'); t.textContent = msg; t.style.display = 'block';
@@ -158,6 +163,7 @@ const anyModal = () => document.querySelector('.modal.show');
 
 // ---------- header and settings controls (the settings live in the Settings modal, same ids and wiring)
 function buildHeader() {
+  $('seed').value = normaliseSeed(safeStore.get('arenaSeed', 1));
   $('answerTimeout').value = clampAnswerTimeout(weaponCfg.answerTimeoutSeconds);
   $('answerTimeout').onchange = (e) => {
     const seconds = clampAnswerTimeout(e.target.value);
@@ -177,7 +183,7 @@ function buildHeader() {
   $('start').onclick = onSpace;
   $('restart').onclick = restart;
   $('warm').onclick = warmUp;
-  $('seed').onchange = () => { if (canPreview()) preview(); };
+  $('seed').onchange = () => { $('seed').value = normaliseSeed($('seed').value); safeStore.set('arenaSeed', Number($('seed').value)); if (canPreview()) preview(); };
   $('logList').onchange = () => loadServerLog($('logList').value);
   $('logFile').onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
@@ -196,6 +202,7 @@ function buildHeader() {
   } });
   $('resConfigure').onclick = () => settingsUi.open('fighters');
   $('wpnReset').onclick = () => { setWeaponCfg({ ...DEFAULT_WEAPON_CONFIG, modelAims: weaponCfg.modelAims, answerTimeoutSeconds: weaponCfg.answerTimeoutSeconds }); renderWeapons(); };
+  $('settingsReset').onclick = resetSettings;
   $('lbBtn').onclick = openLeaderboard;
   $('lbClose').onclick = () => $('lbModal').classList.remove('show');
   $('lbMock').checked = lbIncludeMock;
@@ -235,10 +242,29 @@ function buildHeader() {
 
 // ---------- Fighters tab: the line-up with Remove, and Add (roster fighters out of play, plus gateway
 // models when the picker is on). Same state as before: the enabled slots and the per-slot picked model.
+function persistLineup() {
+  safeStore.set('arenaRoster', [...enabled]);
+  safeStore.set('arenaPicked', pickedModels);
+}
+function resetSettings() {
+  enabled = new Set(DEFAULT_ROSTER); pickedModels = {};
+  $('seed').value = 1;
+  $('answerTimeout').value = clampAnswerTimeout();
+  $('modelAims').checked = false;
+  $('setupSkip').checked = false;
+  setStyle('logos');
+  setWeaponCfg(DEFAULT_WEAPON_CONFIG);
+  audio.setMusic(false); audio.setVolume(0.6); audio.setEnabled(true);
+  setMode(settleMode({ mode: 'live', explicit: false }, serverStatus));
+  for (const key of ['arenaRoster', 'arenaPicked', 'arenaWeapons', 'arenaModelAims', 'arenaStyle', 'arenaSeed', 'arenaSound', 'arenaGeneral', SKIP_KEY]) safeStore.remove(key);
+  renderWeapons(); syncSettings();
+  if (canPreview()) preview();
+}
+
 function setLineup(next) {
   if (!next) return;
   enabled.clear(); for (const id of next.enabled) enabled.add(id);
-  pickedModels = next.picked; safeStore.set('arenaPicked', pickedModels);
+  pickedModels = next.picked; persistLineup();
   syncSettings(); // re-renders this tab too
   if (canPreview()) preview();
 }
@@ -391,6 +417,7 @@ function buildSoundControls() {
 function setMode(m) {
   if (running || countdown.active || liveStarting) stop();
   mode = m;
+  if (m !== 'replay') safeStore.set('arenaGeneral', { mode: m });
   document.body.dataset.mode = m; // the settings tabs say a replay uses its log's fighters and settings
   for (const b of document.querySelectorAll('#modes button, #setupModes button')) b.classList.toggle('on', b.dataset.mode === m);
   $('replayGrp').style.display = m === 'replay' ? 'flex' : 'none';
@@ -413,7 +440,7 @@ async function refreshStatus() {
     k.className = `chip ${serverStatus.keyLoaded ? 'ok' : 'bad'}`;
     updateBudget(serverStatus.budget);
     applyHostedUi();
-    if (serverStatus.modelPicker) loadModelList(); else { modelList = []; syncSettings(); }
+    if (serverStatus.modelPicker) loadModelList(); else { modelList = []; const next = normaliseLineup([...enabled], pickedModels, []); enabled = next.enabled; pickedModels = next.picked; persistLineup(); syncSettings(); }
   } catch {
     $('keyChip').textContent = 'PROXY DOWN'; $('keyChip').className = 'chip bad';
     serverStatus = null; statusKnown = true; settleFirstMode();
@@ -453,11 +480,9 @@ async function loadModelList() {
     const j = await (await fetch('/api/models')).json();
     modelList = j.enabled && Array.isArray(j.models) ? j.models : [];
   } catch { return; }
-  for (const id of Object.keys(pickedModels)) if (!modelList.some((m) => m.id === pickedModels[id])) {
-    delete pickedModels[id];
-    if (rosterById[id]?.gatewaySlot) enabled.delete(id);
-  }
-  safeStore.set('arenaPicked', pickedModels);
+  const next = normaliseLineup([...enabled], pickedModels, modelList);
+  enabled = next.enabled; pickedModels = next.picked;
+  persistLineup();
   syncSettings();
   if (canPreview()) preview();
 }
@@ -848,6 +873,7 @@ async function startLive() {
 }
 
 function beginMatch(prepared = null) {
+  safeStore.set('arenaSeed', normaliseSeed($('seed').value));
   if (prepared) {
     roster = prepared.roster;
     log = null;

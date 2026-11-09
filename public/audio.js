@@ -33,7 +33,7 @@ const save = () => { try { localStorage.setItem(STORE_KEY, JSON.stringify(prefs)
 const saved = load();
 const prefs = {
   enabled: saved.enabled !== false,
-  volume: typeof saved.volume === 'number' ? Math.max(0, Math.min(1, saved.volume)) : 0.6,
+  volume: Number.isFinite(saved.volume) ? Math.max(0, Math.min(1, saved.volume)) : 0.6,
   music: saved.music === true, // music is off by default
 };
 

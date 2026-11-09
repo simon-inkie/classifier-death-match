@@ -1,3 +1,4 @@
+import { ROSTER, DEFAULT_ROSTER, MAX_FIGHTERS } from './shared.js';
 import { companyForModel, fighterIdentity, iconIdForModel } from './model-icons.js';
 
 // Shared first-run and Settings dialog, with Fighters, Gameplay and Sound tabs.
@@ -156,4 +157,37 @@ export function initSettings({ onOpen = () => {}, onStart = () => {} } = {}) {
   $('splashStart').onclick = start;
   select(0);
   return { open, close };
+}
+
+// Validate saved slots before use; validate picked models again when the catalogue arrives.
+export function normaliseLineup(ids, picked, models = null) {
+  const enabled = new Set(), clean = {}, used = new Set();
+  for (const id of Array.isArray(ids) ? ids : DEFAULT_ROSTER) {
+    const fighter = ROSTER.find((r) => r.id === id);
+    if (!fighter || enabled.has(id) || enabled.size >= MAX_FIGHTERS) continue;
+    const model = picked && typeof picked[id] === 'string' ? picked[id] : null;
+    const allowed = model && fighter.kind === 'chat'
+      && (fighter.gatewaySlot || id === 'gemini')
+      && /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_./:-]+$/.test(model)
+      && (models === null || models.some((m) => m.id === model));
+    if (fighter.gatewaySlot && !allowed) continue;
+    // A stale custom Gemini model is dropped too, rather than silently replaced.
+    if (model && !allowed) continue;
+    const identity = allowed ? model : fighter.model || id;
+    if (used.has(identity)) continue;
+    enabled.add(id); used.add(identity);
+    if (allowed) clean[id] = model;
+  }
+  if (!enabled.size) return normaliseLineup(DEFAULT_ROSTER, {});
+  for (const id of DEFAULT_ROSTER) {
+    if (enabled.size >= MIN_FIGHTERS) break;
+    const model = ROSTER.find((r) => r.id === id).model;
+    if (!used.has(model)) { enabled.add(id); used.add(model); }
+  }
+  return { enabled, picked: clean };
+}
+
+export function normaliseSeed(value) {
+  const n = typeof value === 'number' || (typeof value === 'string' && value.trim()) ? Number(value) : NaN;
+  return Number.isFinite(n) ? Math.min(2147483647, Math.max(-2147483648, Math.trunc(n))) : 1;
 }

@@ -6,7 +6,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ROSTER, rosterById, MAX_FIGHTERS } from './public/shared.js';
-import { buildRequest, parseResponse } from './adapters.js';
+import { buildRequest } from './adapters.js';
+import { parseGatewayBody, parseGatewayAnswer } from './lib/gateway.js';
 import { normaliseWeapons } from './public/weapons.js';
 import { cleanRecord, MAX_RECORDS } from './public/leaderboard.js';
 import { pickerEnabled, resolveFighter, createCatalogue, maxUsdPerCall, pickableModels } from './lib/models.js';
@@ -107,9 +108,9 @@ async function decide(fid, scene, weapons, picked) {
       let msg = txt.slice(0, 300);
       try { const e = JSON.parse(txt); msg = e.error?.message || e.message || msg; if (e.error?.type || e.error_type) msg = `${e.error?.type || e.error_type}: ${msg}`; } catch {}
       console.log(`[call ${used}/${BUDGET}] ${fid} HTTP ${r.status} ${ms}ms ${msg.slice(0, 160)}`);
-      return { status: 502, body: { error: `HTTP ${r.status}: ${msg}`, ms, budget: { used, max: BUDGET } } };
+      return { status: 502, body: { error: `HTTP ${r.status}, model ${fighter.model}: ${msg}`, ms, budget: { used, max: BUDGET } } };
     }
-    const parsed = parseResponse(fighter, JSON.parse(txt), scene);
+    const parsed = parseGatewayAnswer(fighter, r.status, parseGatewayBody(fighter, r.status, txt), scene);
     // a picked model with no reported cost counts at a conservative estimate, never as free
     usedUsd += (parsed.costSource === 'none' ? reservedUsd : Math.max(0, Number(parsed.cost) || 0)) - reservedUsd;
     perFighter[fid].ok++;
@@ -120,7 +121,7 @@ async function decide(fid, scene, weapons, picked) {
     const ms = Math.round(performance.now() - t0);
     const msg = e.name === 'AbortError' ? `timeout after ${timeoutMs}ms` : e.message;
     console.log(`[call ${used}/${BUDGET}] ${fid} error ${ms}ms ${msg}`);
-    return { status: 504, body: { error: msg, ms, budget: { used, max: BUDGET } } };
+    return { status: e.name === 'AbortError' ? 504 : 502, body: { error: msg, ms, budget: { used, max: BUDGET } } };
   } finally {
     clearTimeout(timer);
   }

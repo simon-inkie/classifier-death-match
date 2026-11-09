@@ -72,7 +72,7 @@ export function normaliseWeapons(input, fallback = DEFAULT_WEAPON_CONFIG) {
     out[w] = { on: w === 'pistol' ? true : typeof s.on === 'boolean' ? s.on : fallback[w].on };
     for (const k of WEAPON_PARAMS[w]) {
       const { min, max } = paramBounds(w, k);
-      const n = Number(s[k]);
+      const n = ['number', 'string'].includes(typeof s[k]) ? Number(s[k]) : NaN;
       out[w][k] = Number.isFinite(n) && s[k] !== null && s[k] !== '' ? Math.min(max, Math.max(min, Math.round(n))) : fallback[w][k];
     }
   }
@@ -81,7 +81,7 @@ export function normaliseWeapons(input, fallback = DEFAULT_WEAPON_CONFIG) {
   const sp = src.pickups && typeof src.pickups === 'object' ? src.pickups : {};
   out.pickups = {};
   for (const [k, { min, max, step }] of Object.entries(PICKUP_PARAMS)) {
-    const n = Number(sp[k]);
+    const n = ['number', 'string'].includes(typeof sp[k]) ? Number(sp[k]) : NaN;
     out.pickups[k] = Number.isFinite(n) && sp[k] !== null && sp[k] !== '' ? Math.min(max, Math.max(min, Math.round(n / step) * step)) : ORIGINAL_PICKUPS[k];
   }
   if (src.modelAims === true) out.modelAims = true;
