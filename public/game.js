@@ -82,7 +82,11 @@ let fightSoundPlayed = false;
 const countdownHint = document.createElement('div');
 countdownHint.textContent = 'click or press any key to fight';
 countdownHint.style.cssText = 'font:13px var(--font);color:#8c8ca8;margin-top:30px';
-countdownOverlay.append(countdownCaption, countdownHeadline, countdownHint);
+const countdownTitle = document.createElement('div');
+countdownTitle.textContent = 'Classifier Death Match';
+countdownTitle.setAttribute('aria-hidden', 'true');
+countdownTitle.style.cssText = 'font:700 34px var(--font);letter-spacing:.08em;text-transform:uppercase;color:#f4f4fa;margin-bottom:22px';
+countdownOverlay.append(countdownCaption, countdownTitle, countdownHeadline, countdownHint);
 document.body.appendChild(countdownOverlay);
 const countdown = createCountdown({
   show(label) {
