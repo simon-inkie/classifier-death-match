@@ -21,6 +21,8 @@
   header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 2px solid var(--line); background: #0c0c16; }
   h1 .sub { font-size: 11px; letter-spacing: 1px; color: #9aa; text-shadow: none; margin-left: 6px; }
   h1 { font-size: 18px; margin: 0 12px 0 0; letter-spacing: 2px; color: var(--hot); text-shadow: 2px 2px 0 #b02a6a; white-space: nowrap; }
+  #splashTitle, #countdown .match-title { font: 700 clamp(24px, 4.4vw, 40px)/1.25 var(--font); letter-spacing: .11em; text-transform: uppercase; color: var(--hot); text-shadow: .111em .111em 0 #b02a6a; }
+  #countdown .match-title { width: min(90vw, 720px); margin-bottom: 22px; text-wrap: balance; }
   #countdown canvas { width: min(90vw, 720px); height: auto; image-rendering: pixelated; image-rendering: crisp-edges; }
   #countdown .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .grp { display: flex; align-items: center; gap: 4px; font-size: 12px; }
@@ -106,7 +108,7 @@
   th, td { padding: 4px 10px; border-bottom: 1px solid var(--line); text-align: right; }
   th { color: var(--dim); font-weight: normal; text-transform: uppercase; font-size: 11px; }
   td:nth-child(2), th:nth-child(2) { text-align: left; }
-  #results .btns { margin-top: 12px; display: flex; gap: 8px; }
+  #results .btns { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
   label.botchk { border: 2px dashed var(--line); padding: 1px 6px; text-transform: none; }
   /* character style: sprites only show in Logos mode */
   .spr, img.sprite.rs { display: none; }
@@ -272,7 +274,8 @@
   <table id="resTable"></table>
   <div class="legend" id="resLegend"><b>HP left</b>: health at the end (0 = knocked out). <b>Kills</b>: opponents knocked out. <b>Hit rate</b>: share of shots that hit (each shotgun pellet counts). <b>Cost</b>: model spend (~ = estimated).</div>
   <div class="btns">
-    <button id="resAgain" class="go">Next match (seed +1)</button>
+    <button id="resConfigure" type="button" aria-haspopup="dialog" aria-controls="splash">Configure next match</button>
+    <button id="resAgain" class="go">Start next match</button>
     <button id="resReplay">Replay this match</button>
     <button id="resDownload">Download log</button>
     <button id="resClose">Close</button>

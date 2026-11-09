@@ -5,10 +5,46 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import vm from 'node:vm';
 import { tabKeyIndex, trapIndex } from '../public/settings.js';
 
 const html = fs.readFileSync(path.resolve(import.meta.dirname, '../public/index.html'), 'utf8');
+const game = fs.readFileSync(path.resolve(import.meta.dirname, '../public/game.js'), 'utf8');
 const section = (open, close) => html.slice(html.indexOf(open), html.indexOf(close, html.indexOf(open)));
+
+test('results: configure opens settings without leaving results; Start keeps the next-match action', () => {
+  const results = section('<div id="results"', '<div id="splash"');
+  assert.match(results, /id="resConfigure"[^>]*aria-controls="splash"[^>]*>Configure next match<\/button>/);
+  assert.match(results, /id="resAgain"[^>]*>Start next match<\/button>/);
+  const elements = { resConfigure: {}, resAgain: {}, seed: { value: '42' } };
+  let visible = true, opened = null, starts = 0, mode = 'replay';
+  const context = {
+    $: (id) => elements[id],
+    settingsUi: { open: (tab) => { opened = tab; } },
+    hideResults: () => { visible = false; },
+    get mode() { return mode; },
+    setMode: (value) => { mode = value; },
+    start: () => { starts++; },
+  };
+  // Exercise the actual button handlers without booting the renderer or making requests.
+  for (const id of ['resConfigure', 'resAgain']) {
+    const handler = game.split('\n').find((line) => line.includes(`$('${id}').onclick =`));
+    assert.ok(handler, `${id} is wired`);
+    vm.runInNewContext(handler, context);
+  }
+  elements.resConfigure.onclick();
+  assert.equal(opened, 'fighters');
+  assert.equal(visible, true);
+  assert.equal(starts, 0);
+  assert.equal(elements.seed.value, '42');
+  assert.equal(mode, 'replay');
+  // Closing the existing dialog leaves this same Start action available.
+  elements.resAgain.onclick();
+  assert.equal(visible, false);
+  assert.equal(mode, 'mock');
+  assert.equal(elements.seed.value, 43);
+  assert.equal(starts, 1);
+});
 
 test('settings tabs: arrows wrap, Home and End jump, other keys do nothing', () => {
   assert.equal(tabKeyIndex('ArrowRight', 0, 3), 1);

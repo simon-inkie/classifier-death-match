@@ -86,7 +86,7 @@ countdownHint.style.cssText = 'font:13px var(--font);color:#8c8ca8;margin-top:30
 const countdownTitle = document.createElement('div');
 countdownTitle.textContent = 'Classifier Death Match';
 countdownTitle.setAttribute('aria-hidden', 'true');
-countdownTitle.style.cssText = 'font:700 34px var(--font);letter-spacing:.08em;text-transform:uppercase;color:#f4f4fa;margin-bottom:22px';
+countdownTitle.className = 'match-title';
 countdownOverlay.append(countdownCaption, countdownTitle, countdownHeadline, countdownHint);
 document.body.appendChild(countdownOverlay);
 const countdown = createCountdown({
@@ -194,6 +194,7 @@ function buildHeader() {
     // which server this page talks to: the older local servers serve the same files with other settings
     $('serverInfo').textContent = `${location.host}, model picker ${serverStatus?.modelPicker ? 'on' : 'off'}`;
   } });
+  $('resConfigure').onclick = () => settingsUi.open('fighters');
   $('wpnReset').onclick = () => { setWeaponCfg({ ...DEFAULT_WEAPON_CONFIG, modelAims: weaponCfg.modelAims, answerTimeoutSeconds: weaponCfg.answerTimeoutSeconds }); renderWeapons(); };
   $('lbBtn').onclick = openLeaderboard;
   $('lbClose').onclick = () => $('lbModal').classList.remove('show');
