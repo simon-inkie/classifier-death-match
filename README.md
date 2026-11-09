@@ -71,6 +71,118 @@ Model errors keep fighters stunned while other fighters continue. Three consecut
 
 Tests use fake clocks and a proxy on **8795** with a local fake gateway and dummy key. They make no real gateway calls; no live batch is run by the tests.
 
+## Settings and controls reference
+
+A walk through the page for a first-time user, in the order you meet it. Everything here is described from what the page does today.
+
+### The top bar
+
+- **Mock / Live / Replay**: the three modes. Mock simulates the models locally, so it is free and works offline. Live asks the real models through the local proxy and needs `AI_GATEWAY_API_KEY`. Replay plays back a saved match log. Your last Mock or Live choice is remembered; Replay is not. If Live cannot run, the page starts in Mock and the **Gameplay** tab says why.
+- **Replay controls** (Replay mode only): a **saved logs** list, a file picker for a `.json` log, and a **Speed** menu (1, 2, 4 or 8). In Replay the seed and the fighters come from the log, so those settings are hidden.
+- **Settings**: opens the settings dialog (below). Opening it during a match does not stop the match; changes apply from the next one.
+- **Start [space]**: starts a match. Once one is running the same button reads **Pause** and then **Resume**, and during the countdown it reads **Fight** and skips the wait.
+- **Restart**: starts the same match again from the beginning, with the same seed and fighters.
+- **Warm up**: sends three throwaway calls to each model so that connection set-up and cold starts do not skew the first real match. It is shown only in Live mode on a local server, and needs a loaded key.
+- **Leaderboard**: opens the all-time leaderboard (see [Leaderboard](#leaderboard)). Mock matches are left out unless you tick **Include mock**.
+- **Indicators**: **KEY LOADED** (green) or **NO KEY** (red) says whether the proxy has a gateway key, and **PROXY DOWN** means the page cannot reach the server. On the hosted site the chip reads **LIVE OPEN**, **LIVE PAUSED** or **MOCK ONLY** instead. **CALLS used/max** appears when the server reports a call budget, and turns red above 80% of it. A flashing **click to enable sound** chip means the browser is waiting for your first click before it will play audio. The clock on the right counts the round down from 60 seconds, with the ring warning beside it.
+
+![Start screen with the top bar](docs/screens/01-start.png)
+
+### The start screen
+
+On every load the settings dialog opens as an intro, titled **Classifier Death Match**, with a one-line explanation of the game. It offers **Start match [Space]** (closes the dialog and starts a match) and **Look around first** (closes it so you can see the arena). Tick **Do not show this again** to skip it on later loads; Settings stays available in the top bar. `?nosplash=1` hides it for one load and `?splash=1` forces it.
+
+### Settings dialog
+
+It has three tabs (arrow keys, Home and End move between them). **Escape**, or a click outside the dialog, closes it. When opened from the top bar it shows **Done** instead of the intro buttons.
+
+#### Fighters tab
+
+- **The line-up**: one row per fighter in play, with its sprite, name, a tag, the model id underneath and a **Remove** button.
+- **Tags**: **Decision Classifier** is a model that answers a typed question with a probability for each option (Jev, Luna, Laya, ScaleDown). **Chat LLM (JSON)** is a built-in chat model (Gemini) that is prompted to reply in JSON. **Gateway model** is any other model you added from the AI Gateway list, asked through chat completions like Gemini. **If/Else Bot** is the scripted control, with no model behind it.
+- **Add fighter**: opens a search box and a list. Arena fighters not in play are tagged `arena`; gateway models are tagged `gateway` (or `gateway (live only)`). Gateway models appear only when the server has the model picker on (see [Model picker](#model-picker-optional-off-by-default)). Click a row to add it.
+- **Between 2 and 6 fighters**: **Remove** is disabled at 2, and **Add fighter** is disabled at 6. A note beside the button shows how many are in play.
+- **Answer timeout (seconds)**: how long a model has to answer before its fighter is stunned. Whole seconds from 1 to 10, default 2. Full LLMs are slower than classifiers, so when the line-up includes a Gemini or gateway model a hint appears and the field flashes once, suggesting you raise the timeout if they keep getting stunned. The timeout is saved in the match log, so a replay uses the same value.
+- In Replay mode this tab only says that the fighters and models from the log are used.
+
+#### Gameplay tab
+
+- **Mode**: **Live (real models)** or **Mock (free, offline)**, the same choice as the top bar. Live is greyed out, with a note, when it cannot run.
+- **Character style**: **Classic** (coloured discs) or **Logos** (a pixel sprite per fighter, the default). Key `L` toggles it.
+- **Seed**: a whole number (default 1). The same seed gives the same starting layout, and with the same recorded actions a match replays identically.
+- **Model aims (chooses who to shoot)**: off by default. When ticked, each model picks which enemy to shoot rather than the game choosing the nearest (see [Model aims](#model-aims-optional)).
+- **Weapons**: a table with a tick box per weapon (untick to stop it spawning) and editable numbers: damage, cooldown in ticks, bullet life or range, ammo, and an extra column for pellets, blast radius or burst length where the weapon has one. The pistol is always on, with unlimited ammo. The flamethrower is off by default. Values outside the allowed range are clamped. Changed values are highlighted, and the default sits beside each box. A line under the table summarises the active config and its short id.
+- **Pickups**: **Starting pickup density** (0 to 2 in steps of 0.25, default 0.75) scales how many pickup spots are filled at the start, where 0 is none and 1 is every spot. **Respawn rate** (0 to 3 in steps of 0.25, default 1) scales how fast a taken pickup comes back, where 1 is 15 seconds, 0.5 is 30 seconds and 0 means never.
+- **Reset weapons and pickups to defaults**: restores the weapon table and pickup numbers only. It leaves model aims and the answer timeout as they are.
+- The weapon and pickup settings are fixed when a match starts, so edits apply from the next match.
+
+#### Sound tab
+
+**Sound** on or off (key `M`), **Volume** (greyed out while sound is off) and **Music** on or off (key `N`). The keys work during a match. Sound is presentation only and never changes the simulation.
+
+#### Buttons at the foot of the dialog
+
+- **Reset all settings**: puts everything back to its default. See [What is remembered](#what-is-remembered-in-the-browser).
+- **Done**: closes the dialog (Settings only). **Start match** and **Look around first** replace it on the intro.
+- **Do not show this again**: the tick box described under the start screen.
+
+![Fighters tab](docs/screens/02-fighters.png)
+
+![Gameplay tab](docs/screens/03-gameplay.png)
+
+![Sound tab](docs/screens/04-sound.png)
+
+### The countdown
+
+Starting a Mock or Live match first shows a full-screen **3, 2, 1, FIGHT!** over the arena. Nothing in the match runs until it finishes. Click or press any key to skip it. Replay starts straight away with no countdown. In Live mode the page first asks the server to approve the match, so there can be a short pause, and an error message if the server refuses.
+
+![Countdown](docs/screens/05-countdown.png)
+
+### During a match
+
+The arena is in the middle, with a panel for each fighter on either side: health, the latest decision and its probability bars, latency, errors, cost and a scrolling decision log. See [Playing](#playing) for what the arena shows and for pause, history scrub and the keyboard shortcuts. At the end the winner is celebrated for a few seconds (any click or key skips it) and the results screen follows.
+
+![Match in progress](docs/screens/06-match.png)
+
+### The results screen
+
+Shown at the end of every match, over the arena.
+
+- **Configure next match**: opens Settings on the Fighters tab.
+- **Start next match**: starts another match straight away with the seed increased by one. If you were watching a replay it switches to Mock first.
+- **Replay this match**: loads the match you just played into Replay mode and plays it back (key `r`).
+- **Download log**: saves the match as a JSON file named `arena-<mode>-seed<seed>.json`. You can load it later with the Replay file picker. Matches are also saved under `logs/` on a local server.
+- **Close**: hides the results and leaves the finished arena on screen.
+- **Reset session wins**: sets every fighter's **Session wins** count back to zero.
+
+The table is ordered by final place. The columns are:
+
+| Column | Meaning |
+|---|---|
+| **#** | Final place. |
+| **Fighter** | Name and model. |
+| **HP left** | Health at the end of the match; 0 means knocked out. |
+| **Kills** | Opponents that fighter knocked out. |
+| **Session wins** | Matches won by that fighter since the count was last reset. It is kept in this browser, so it survives a reload. |
+| **Decisions** | How many decisions the fighter made during the match. |
+| **Dec/s** | Decisions divided by the seconds it was alive (at least one). |
+| **Median latency** | Median time from sending a scene to receiving the answer. |
+| **Errors** | Failed or timed-out requests. |
+| **Hit rate** | Share of its shots that hit (each shotgun pellet counts), or `-` if it did not shoot. |
+| **Cost** | Model spend for the match; `~` means part of it is estimated. The scripted bot shows `-`. |
+
+![Results screen](docs/screens/07-results.png)
+
+### What is remembered in the browser
+
+The page keeps these in the browser's local storage: the fighter line-up and any picked gateway models, weapons and pickups (including the answer timeout), model aims, character style, seed, sound, volume and music, the Mock or Live choice, the **Do not show this again** tick, and the session wins. If local storage is blocked the page still works, it just forgets everything on reload.
+
+**Reset all settings** returns these to their defaults and removes them from storage: the default four classifiers, no picked models, seed 1, a 2 second timeout, the default weapons and pickups, model aims off, Logos style, sound on at 60% volume with music off, Live (or Mock if Live cannot run), and the intro shown again on next load. It does not clear the session wins, which only **Reset session wins** clears, and it does not touch the leaderboard, which is stored by the server and has its own **Reset leaderboard** button.
+
+### Unattended runs
+
+To play many live matches with no browser at all, see [Unattended live matches (AUTO-PLAY)](#unattended-live-matches-auto-play).
+
 ## The fighters
 
 | Fighter | Model | API | Prompt |
