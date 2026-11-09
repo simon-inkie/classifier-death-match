@@ -17,7 +17,7 @@ import { createHosted, clientNetwork, PLAY_S, IDLE_S, MIN_LIFE_S } from '../lib/
 import { createStore, MemoryStore, RestStore, FileStore } from '../lib/storage.js';
 import { spendConfig, worstCallUsd, matchReserveUsd, trancheUsd, callBound, PROMPT_CHAR_CAP, PICKER_SAFETY } from '../lib/spend.js';
 import { cleanScene, promptChars } from '../lib/scene.js';
-import { resolveFighter, parseCatalogue, validModelId } from '../lib/models.js';
+import { resolveFighter, parseCatalogue, validModelId, pickableModels } from '../lib/models.js';
 import { rosterById } from '../public/shared.js';
 import { createMatch, sceneFor, applyAction, step } from '../public/sim.js';
 import { botDecide, runHeadlessMock } from '../public/brain.js';
@@ -280,6 +280,25 @@ test('picker safety: a picked model is bounded at a multiple of its listed price
   const r = resolveFighter('jev', 'acme/plain', { enabled: true, models: cat });
   assert.ok(r.ok);
   assert.ok(Math.abs(callBound(r.fighter, true) - PICKER_SAFETY * worstCallUsd(r.fighter)) < 1e-15);
+});
+
+test('picker: gemini extras are ignored, -batch is hidden and refused, non-chat models are refused', () => {
+  const gem = { input: '0.0000001', output: '0.0000004', maps_search: '25', service_tiers: { priority: { input: '0.0000002', output: '0.0000008' }, flex: { input: '0.00000005', output: '0.0000002' } } };
+  const models = parseCatalogue({ data: [
+    { id: 'google/gemini-3.5-flash-lite', type: 'language', pricing: gem },
+    { id: 'google/gemini-3.5-flash-lite-batch', type: 'language', pricing: gem },
+    { id: 'google/imagen-x', type: 'language', pricing: { image: '0.04' } },
+    { id: 'acme/tts-x', type: 'language', pricing: { output: '0.00003' } },
+    { id: 'acme/embed-x', type: 'language', pricing: { input: '0.0000001' } },
+  ] });
+  assert.ok(!models.some((m) => /-batch$/.test(m.id)));
+  assert.deepEqual(models.find((m) => m.id === 'google/gemini-3.5-flash-lite').price, { in: 0.0000001, out: 0.0000004 });
+  assert.ok(resolveFighter('jev', 'google/gemini-3.5-flash-lite', { enabled: true, models }).ok);
+  assert.ok(pickableModels(models).some((m) => m.id === 'google/gemini-3.5-flash-lite'));
+  const twin = [...models, { id: 'google/gemini-3.5-flash-lite-batch', name: 'b', price: { in: 1e-7, out: 4e-7 } }];
+  assert.equal(resolveFighter('jev', 'google/gemini-3.5-flash-lite-batch', { enabled: true, models: twin }).ok, false);
+  assert.ok(!pickableModels(twin).some((m) => /-batch$/.test(m.id)));
+  for (const id of ['google/imagen-x', 'acme/tts-x', 'acme/embed-x']) assert.equal(resolveFighter('jev', id, { enabled: true, models }).ok, false, id);
 });
 
 test('leaderboard: free text is stripped of markup; reset needs the admin token', async () => {
