@@ -30,6 +30,15 @@ export AI_GATEWAY_API_KEY=...        # from your Vercel AI Gateway dashboard
 npm start                            # or: npm run live
 ```
 
+### Getting a Vercel AI Gateway key
+
+1. Sign in to the Vercel dashboard, open **AI Gateway**, then **API Keys** (the [authentication guide](https://vercel.com/docs/ai-gateway/authentication) shows where).
+2. Create a key and export it as `AI_GATEWAY_API_KEY`. Treat it like a password.
+3. Check your credit. New accounts get [$5 of free credit a month](https://vercel.com/docs/ai-gateway/pricing), but the free tier covers only a subset of models and is rate limited per model, so a busy match can return 429 errors.
+4. For the full model list and higher limits, add a little cash as AI Gateway credits (this moves you to the paid tier), and set a spending limit on the key before leaving models to fight unattended.
+
+Mock and replay modes need no key and make no paid calls.
+
 `npm run live` does the same, and can also read the key from a [pass](https://www.passwordstore.org/) entry if you set `ARENA_PASS_ENTRY=<entry>`. The key stays in the local proxy process (`server.js`). It is never sent to the browser, printed or written to disk. In the page, pick **Live**, press **Warm up** (three throwaway calls per model to get TLS and cold starts out of the way) and then **Start**.
 
 A match makes up to 10 calls per second per fighter for up to 60 seconds. The proxy has a hard call budget per process (`CALL_BUDGET`, default 3000) shown as `CALLS used/max` in the header; once it is spent, fighters are stunned and stop asking. There are no retries. Per-call costs are shown on each panel, using the gateway's reported cost where it returns one.
@@ -194,7 +203,7 @@ To play many live matches with no browser at all, see [Unattended live matches (
 | Gemini Flash (opt-in) | `google/gemini-2.5-flash-lite` | `POST /v1/chat/completions` with a `json_schema` response: `{action, confidence}` | full |
 | Bot (opt-in) | scripted if/else | runs locally, a control | none |
 
-Every model is asked exactly one question: which action to take. The typed-decision models return a probability for each of the eight options, shown as bars on their panel. Gemini returns a self-reported confidence for its pick, which is not a distribution. The bot is one-hot.
+Every model is asked exactly one question: which action to take. The typed-decision models return a probability for each of the eight options, shown as bars on their panel. Gemini returns a self-reported confidence for its pick, which is not a distribution, so its panel shows a single bar for the action it chose and the other options stay empty. The bot is one-hot.
 
 Model ids, prices and mock latency profiles live in `ROSTER` in `public/shared.js`. Prices are estimates taken from the gateway's public model list.
 
